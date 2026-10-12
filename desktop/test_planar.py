@@ -7,7 +7,7 @@ from reconstruct import write_glb
 
 
 class PlanarTests(unittest.TestCase):
-    def test_small_waves_flatten_without_changing_outline(self):
+    def test_small_waves_keep_orientation_and_bound(self):
         x,z=np.meshgrid(np.linspace(0,2,25),np.linspace(0,2,25))
         vertices=np.c_[x.ravel(),(.006*np.sin(x*2)*np.cos(z)).ravel(),z.ravel()]
         faces=[]
@@ -19,10 +19,23 @@ class PlanarTests(unittest.TestCase):
         self.assertEqual(len(planes),1)
         result,report=straighten(vertices,faces,planes,labels)
         self.assertGreater(report['movedVertices'],300)
-        self.assertLessEqual(report['maximumShiftMm'],25)
+        self.assertLessEqual(report['maximumShiftMm'],5.001)
         _,normal_before,_=face_data(vertices,faces)
         _,normal_after,_=face_data(result,faces)
         self.assertTrue((np.einsum('ij,ij->i',normal_before,normal_after)>0).all())
+        self.assertLessEqual(report['maximumNormalChangeDegrees'],12.001)
+
+    def test_texture_seam_aliases_move_together(self):
+        x,z=np.meshgrid(np.linspace(0,2,20),np.linspace(0,2,20))
+        base=np.c_[x.ravel(),(.007*np.sin(x*2)).ravel(),z.ravel()]
+        vertices=np.vstack([base,base]);faces=[]
+        for j in range(19):
+            for i in range(19):
+                a=j*20+i;faces.extend([[a,a+1,a+20],[a+1+400,a+21+400,a+20+400]])
+        faces=np.array(faces)
+        planes,labels,_=discover_planes(vertices,faces,max_planes=1)
+        result,_=straighten(vertices,faces,planes,labels)
+        np.testing.assert_allclose(result[:400],result[400:],atol=1e-12)
 
     def test_glb_rewrite_preserves_topology_and_color(self):
         with tempfile.TemporaryDirectory() as tmp:

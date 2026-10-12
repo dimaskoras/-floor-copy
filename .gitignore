@@ -7,3 +7,5 @@ data/
 *.zip
 *.xcodeproj/
 node_modules/
+desktop/web/fonts/
+logs/

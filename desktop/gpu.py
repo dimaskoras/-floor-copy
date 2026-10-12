@@ -34,7 +34,15 @@ def fuse_cuda(points, colors, voxel):
         p = cp.asarray(points, dtype=cp.float64)
         c = cp.asarray(colors, dtype=cp.float64)
         cells = cp.floor(p/voxel).astype(cp.int64)
-        _, inverse, counts = cp.unique(cells, axis=0, return_inverse=True, return_counts=True)
+        minimum=cells.min(axis=0);spans=cp.asnumpy(cells.max(axis=0)-minimum+1)
+        if int(spans[0])*int(spans[1])*int(spans[2])>=2**63:
+            raise ValueError('Voxel-key range exceeds int64')
+        shifted=cells-minimum
+        keys=(shifted[:,0]*int(spans[1])+shifted[:,1])*int(spans[2])+shifted[:,2]
+        # CuPy unique(axis=0) compares rows through Python on this version.
+        # One-dimensional keys preserve the same lexicographic ordering and
+        # execute sorting and grouping in batched GPU kernels.
+        _, inverse, counts = cp.unique(keys, return_inverse=True, return_counts=True)
         xyz = cp.zeros((len(counts),3), cp.float64)
         rgb = cp.zeros_like(xyz)
         cp.add.at(xyz, inverse, p)

@@ -9,6 +9,7 @@ from pathlib import Path
 
 import numpy as np
 import gpu
+from scipy.sparse import coo_matrix, diags
 
 
 class ScanMesh:
@@ -167,57 +168,85 @@ def discover_planes(vertices, faces, threshold=.025, max_planes=16, minimum_area
     return planes,labels,backend
 
 
-def straighten(vertices,faces,planes,labels,max_shift=.025):
-    # A vertex may be moved only if at least two thirds of its incident faces
-    # support discovered planes. Shared corners solve all plane constraints.
-    incidence = np.bincount(faces.ravel(),minlength=len(vertices))
-    supported_faces = faces[labels>=0]
-    votes = np.bincount(supported_faces.ravel(),minlength=len(vertices))
-    trusted = (votes>=2) & (votes >= incidence*.67)
-    lhs = np.tile(np.eye(3)[None]*1e-6,(len(vertices),1,1))
-    rhs = np.zeros_like(vertices)
-    for plane in planes:
-        ids=np.unique(faces[labels==plane['id']])
-        n=np.array(plane['normal']);distance=vertices[ids]@n+plane['constant']
-        ids=ids[(np.abs(distance)<=max_shift)&trusted[ids]]
-        distance=vertices[ids]@n+plane['constant']
-        lhs[ids]+=np.outer(n,n)
-        rhs[ids]-=distance[:,None]*n
-    active = np.flatnonzero(np.linalg.norm(rhs,axis=1)>1e-9)
-    correction = np.zeros_like(vertices)
-    correction[active]=np.linalg.solve(lhs[active],rhs[active,:,None])[:,:,0]
-    displacement=np.linalg.norm(correction,axis=1)
-    # Reject, rather than clamp, excessive corrections to keep accepted planes flat.
-    correction[displacement>max_shift]=0
-    result=vertices+correction
-    before_cross=np.cross(vertices[faces[:,1]]-vertices[faces[:,0]],vertices[faces[:,2]]-vertices[faces[:,0]])
-    rollback = np.zeros(len(faces),bool)
-    # Rolling back a triangle can affect its neighbours. Repeat until all faces
-    # keep orientation; each iteration permanently restores at least one vertex.
-    for _ in range(len(vertices)+1):
-        after_cross=np.cross(result[faces[:,1]]-result[faces[:,0]],result[faces[:,2]]-result[faces[:,0]])
-        unsafe=(np.einsum('ij,ij->i',before_cross,after_cross)<=0) & (np.linalg.norm(before_cross,axis=1)>1e-12)
+def straighten(vertices,faces,planes,labels,max_shift=.005, architecture_only=False):
+    # Texture seams duplicate geometric vertices. All aliases must receive the
+    # same displacement, even if their triangle incidence differs.
+    _,inverse,counts=np.unique(np.round(vertices,6),axis=0,return_inverse=True,return_counts=True)
+    number=len(counts)
+    welded=np.zeros((number,3));np.add.at(welded,inverse,vertices);welded/=counts[:,None]
+    f=inverse[faces]
+    use_labels=labels.copy()
+    accepted=[]
+    low,high=np.quantile(vertices[:,1],[.02,.98])
+    for p in planes:
+        if not architecture_only:
+            accepted.append(p)
+            continue
+        midpoint=(p['bounds'][0][1]+p['bounds'][1][1])/2
+        architecture=(p['kind']=='vertical' and p['areaM2']>=2.5 and p['bounds'][1][1]-p['bounds'][0][1]>=1.7) or (p['kind']=='horizontal' and p['areaM2']>=4 and min(abs(midpoint-low),abs(midpoint-high))<.15)
+        if not architecture_only or architecture:accepted.append(p)
+        else:use_labels[use_labels==p['id']]=-1
+    incidence=np.bincount(f.ravel(),minlength=number)
+    votes=np.bincount(f[use_labels>=0].ravel(),minlength=number)
+    trusted=(votes>=2)&(votes>=incidence*.67)
+    lhs=np.tile(np.eye(3)[None]*1e-6,(number,1,1));rhs=np.zeros_like(welded)
+    for p in accepted:
+        ids=np.unique(f[use_labels==p['id']]);n=np.array(p['normal'])
+        distance=welded[ids]@n+p['constant']
+        ids=ids[(np.abs(distance)<.025)&trusted[ids]]
+        distance=welded[ids]@n+p['constant']
+        lhs[ids]+=np.outer(n,n);rhs[ids]-=distance[:,None]*n
+    active=np.linalg.norm(rhs,axis=1)>1e-10
+    delta=np.zeros_like(welded)
+    delta[active]=np.linalg.solve(lhs[active],rhs[active,:,None])[:,:,0]
+    length=np.linalg.norm(delta,axis=1)
+    delta*=np.minimum(1,max_shift/np.maximum(length,1e-15))[:,None]
+    # Smooth the displacement field, not the surface itself. Fixed unsupported
+    # vertices taper each patch into its untouched surroundings.
+    edges=np.sort(np.concatenate([f[:,[0,1]],f[:,[1,2]],f[:,[2,0]]]),axis=1)
+    edges=np.unique(edges,axis=0);edges=edges[edges[:,0]!=edges[:,1]]
+    rows=np.r_[edges[:,0],edges[:,1]];cols=np.r_[edges[:,1],edges[:,0]]
+    adjacency=coo_matrix((np.ones(len(rows)),(rows,cols)),shape=(number,number)).tocsr()
+    avg=diags(1/np.maximum(np.asarray(adjacency.sum(axis=1)).ravel(),1))@adjacency
+    for _ in range(8):
+        delta=.35*delta+.65*(avg@delta)
+        delta[~active]=0
+    _,old_normals,old_area=face_data(vertices,faces)
+    old_edges=np.linalg.norm(vertices[faces[:,[1,2,0]]]-vertices[faces],axis=2)
+    factors=np.ones(number)
+    rejected=np.zeros(len(faces),bool)
+    for _ in range(32):
+        result=vertices+(delta*factors[:,None])[inverse]
+        _,normals,area=face_data(result,faces)
+        edge_length=np.linalg.norm(result[faces[:,[1,2,0]]]-result[faces],axis=2)
+        ratio=edge_length/np.maximum(old_edges,1e-10)
+        unsafe=(old_area>1e-10)&((np.einsum('ij,ij->i',old_normals,normals)<np.cos(np.deg2rad(12))) | (area<old_area*.7) | (area>old_area*1.3) | (ratio.min(axis=1)<.8) | (ratio.max(axis=1)>1.2))
         if not unsafe.any():break
-        rollback |= unsafe
-        restore = np.unique(faces[unsafe])
-        if np.all(result[restore]==vertices[restore]):
-            raise ValueError('Не удалось проверить ориентацию треугольников')
-        result[restore]=vertices[restore]
+        rejected|=unsafe
+        factors[np.unique(f[unsafe])]*=.5
+    else:
+        # Conservative final fallback: the unmodified mesh is preferable to
+        # hiding a failed quality check behind a visually smooth result.
+        result=vertices.copy();factors[:]=0
     shift=np.linalg.norm(result-vertices,axis=1)
+    _,normals,_=face_data(result,faces)
+    angles=np.degrees(np.arccos(np.clip(np.einsum('ij,ij->i',old_normals,normals),-1,1)))
     return result,{'movedVertices':int((shift>1e-6).sum()),'maximumShiftMm':float(shift.max()*1000),
-                   'medianShiftMm':float(np.median(shift[shift>1e-6])*1000) if (shift>1e-6).any() else 0,
-                   'rolledBackFaces':int(rollback.sum())}
+                  'medianShiftMm':float(np.median(shift[shift>1e-6])*1000) if (shift>1e-6).any() else 0,
+                  'restrictedFaces':int(rejected.sum()),'maximumNormalChangeDegrees':float(angles[old_area>1e-10].max()),
+                  'weldedSeamGroups':int((counts>1).sum()),'profile':'architecture' if architecture_only else 'selected surfaces',
+                  'processedPlanes':[p['id'] for p in accepted]}
 
 
 def analyze(source,destination):
     destination=Path(destination);destination.mkdir(parents=True,exist_ok=True)
     mesh=ScanMesh(source)
     planes,labels,backend=discover_planes(mesh.vertices,mesh.faces)
-    corrected,changes=straighten(mesh.vertices,mesh.faces,planes,labels)
+    corrected,changes=straighten(mesh.vertices,mesh.faces,planes,labels,architecture_only=True)
     mesh.save(destination/'straightened.glb',corrected)
-    report={'method':'bounded planar regularization','backend':backend,'planes':planes,'changes':changes,
+    report={'method':'seam-aware displacement regularization v2','processingVersion':2,'backend':backend,'planes':planes,'changes':changes,
             'bounds':np.array([mesh.vertices.min(axis=0),mesh.vertices.max(axis=0)]).tolist(),
-            'accuracyVerified':False,'maximumAllowedShiftMeters':.025,
+            'accuracyVerified':False,'maximumAllowedShiftMeters':.005,
             'warnings':['Исправлены только небольшие отклонения от найденных плоскостей.',
                         'Пропущенные поверхности не восстановлены; мебель не заменена CAD-моделями.',
                         'Выделенные вертикальные плоскости могут принадлежать мебели, а не стенам.',

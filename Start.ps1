@@ -7,5 +7,4 @@ if (-not (Test-Path -LiteralPath $pythonPath)) {
     & $pythonPath -m pip install -r desktop\requirements.txt
     if ($LASTEXITCODE -ne 0) { throw 'Не удалось установить библиотеки.' }
 }
-Start-Process 'http://127.0.0.1:4318'
-& $pythonPath desktop\server.py
+& $pythonPath desktop\launcher.py start
