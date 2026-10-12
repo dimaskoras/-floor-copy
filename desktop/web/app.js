@@ -6,6 +6,7 @@ const $ = id => document.getElementById(id);
 const renderer = new THREE.WebGLRenderer({antialias:true});
 renderer.setPixelRatio(Math.min(devicePixelRatio,2));
 renderer.setClearColor(0x0c111b);
+renderer.localClippingEnabled=true;
 $('viewport').append(renderer.domElement);
 const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(55,1,.01,1000);
@@ -34,14 +35,17 @@ function fit(top=false){
  const extent=Math.max(size.x,size.y,size.z,1);
  controls.target.copy(center);
  camera.up.set(0,top?0:1,top?-1:0);
- camera.position.copy(center).add(top?new THREE.Vector3(0,extent*1.4,.001):new THREE.Vector3(extent,extent*.65,extent));
+ const vertical=THREE.MathUtils.degToRad(camera.fov),horizontal=2*Math.atan(Math.tan(vertical/2)*camera.aspect);
+ const distance=Math.max(size.length()/2,1)/Math.sin(Math.min(vertical,horizontal)/2)*1.1;
+ const direction=top?new THREE.Vector3(0,1,.0001):new THREE.Vector3(1,.65,1).normalize();
+ camera.position.copy(center).addScaledVector(direction,distance);
  camera.far=Math.max(100,extent*10);camera.updateProjectionMatrix();controls.update();
  grid.position.y=box.min.y-.02;
 }
 async function load(job,nextMode=mode){
  current=job;mode=nextMode;
  const ticket=++loadTicket;
- const file=mode==='mesh'&&job.report.mesh?'mesh.glb':'points.glb';
+ const file=mode==='corrected'&&job.report.straightened?'straightened.glb':mode==='points'&&(!job.report.importedModel||job.report.pointCloud)?'points.glb':job.report.mesh?'mesh.glb':'points.glb';
  try{
   const gltf=await new GLTFLoader().loadAsync(`/data/${job.id}/${file}`);
   if(ticket!==loadTicket){dispose(gltf.scene);return}
@@ -51,7 +55,12 @@ async function load(job,nextMode=mode){
   scene.add(model);$('empty').hidden=true;clearMarks();fit();error('');
   $('exports').replaceChildren();
   const downloads=job.report.importedModel ? [['GLB',file]] : [['GLB',file],['PLY',file.replace('.glb','.ply')]];
-  $('points').disabled=!!job.report.importedModel&&job.report.mesh;
+  $('points').disabled=!!job.report.importedModel&&job.report.mesh&&!job.report.pointCloud;
+  $('corrected').disabled=!job.report.straightened;
+  const changes=job.report.planarAnalysis?.changes;
+  $('changes').textContent=changes?`Сдвинуто ${changes.movedVertices} вершин; максимум ${changes.maximumShiftMm.toFixed(1)} мм. Это величина правки, а не точность.`:'Текстуры сохраняются. Пропуски и большие деформации этим способом не исправляются.';
+  $('plan').hidden=!job.report.planComparison;
+  if(job.report.planComparison)$('plan').href=`/data/${job.id}/${job.report.planComparison}`;
   for(const [label,name] of downloads){
    const a=document.createElement('a');a.textContent=label;a.href=`/data/${job.id}/${name}`;a.download=name;$('exports').append(a);
   }
@@ -59,7 +68,18 @@ async function load(job,nextMode=mode){
 }
 $('mesh').onclick=()=>current&&load(current,'mesh');
 $('points').onclick=()=>current&&load(current,'points');
+$('original').onclick=()=>current&&load(current,'mesh');
+$('corrected').onclick=()=>current&&load(current,'corrected');
+$('regularize').onclick=async()=>{
+ if(!current)return error('Сначала выбери модель');
+ try{
+  const response=await fetch('/api/regularize',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:current.id})});
+  const data=await response.json();if(!response.ok)throw new Error(data.error);
+  $('status').textContent='Выделяю плоскости…';
+ }catch(e){error(e.message)}
+};
 $('fit').onclick=()=>fit();$('top').onclick=()=>fit(true);
+$('cut').onchange=()=>{renderer.clippingPlanes=$('cut').checked?[new THREE.Plane(new THREE.Vector3(0,-1,0),2.4)]:[]};
 $('measure').onclick=()=>{measuring=!measuring;$('measure').setAttribute('aria-pressed',measuring);clearMarks()};
 let down;
 renderer.domElement.addEventListener('pointerdown',e=>{down=[e.clientX,e.clientY]});
@@ -97,15 +117,17 @@ async function refresh(){
   $('jobs').replaceChildren();
   for(const job of jobs){
    const button=document.createElement('button');
-   button.textContent=job.state==='done'?`Участок ${job.id.slice(0,6)} · ${job.report.importedModel?'импорт GLB':job.report.frames+' кадров'}`:job.message;
+   button.textContent=job.state==='done'?(job.report.title||`Участок ${job.id.slice(0,6)} · ${job.report.importedModel?'импорт GLB':job.report.frames+' кадров'}`):job.message;
    button.disabled=job.state!=='done';button.onclick=()=>load(job);$('jobs').append(button);
    if(job.state==='running'){$('status').textContent=job.message;$('progress').hidden=false;$('progress').value=job.progress}
   }
   if(!jobs.some(j=>j.state==='running')){
    $('progress').hidden=true;
-   const last=jobs.at(-1);if(last)$('status').textContent=last.state==='error'?`Ошибка: ${last.message}`:'Обработка завершена';
+   const last=jobs.at(-1);if(last)$('status').textContent=last.state==='error'?`Ошибка: ${last.message}`:last.message;
   }
-  const ready=jobs.find(j=>j.state==='done');if(ready&&!autoLoaded){autoLoaded=true;await load(ready)}
+  const ready=jobs.findLast(j=>j.state==='done');if(ready&&!autoLoaded){autoLoaded=true;await load(ready)}
+  const updated=current&&jobs.find(j=>j.id===current.id);
+  if(updated?.state==='done'&&updated.report.straightened&&!current.report.straightened){await load(updated,'corrected')}
  }catch(e){$('status').textContent=e.message}
  setTimeout(refresh,1500);
 }

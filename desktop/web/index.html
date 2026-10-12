@@ -15,6 +15,12 @@
  <h2>Просмотр</h2>
  <div class="row"><button id="mesh">Сетка</button><button id="points">Точки</button></div>
  <div class="row"><button id="fit">Весь участок</button><button id="top">Сверху</button></div>
+ <label class="muted small"><input type="checkbox" id="cut"> Убрать геометрию выше 2,4 м</label>
+ <h2>Плоские поверхности</h2>
+ <button id="regularize">Выровнять отклонения до 2,5 см</button>
+ <div class="row"><button id="original">Исходная</button><button id="corrected" disabled>После обработки</button></div>
+ <p id="changes" class="muted small">Текстуры сохраняются. Пропуски и большие деформации этим способом не исправляются.</p>
+ <a id="plan" hidden target="_blank">Сравнение с планировкой</a>
  <h2>Измерение</h2>
  <button id="measure" aria-pressed="false">Выбрать две точки</button>
  <p id="distance">Нажми кнопку, затем две точки модели.</p>
