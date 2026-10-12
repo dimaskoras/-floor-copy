@@ -8,6 +8,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from reconstruct import process
+from import_model import import_glb
 
 ROOT = Path(__file__).resolve().parent
 DATA = ROOT.parent/'data'
@@ -23,7 +24,7 @@ def worker(identifier, archive):
             JOBS[identifier].update(progress=percent, message=message)
     try:
         with PROCESS_LOCK:
-            report = process(archive, DATA/identifier, progress)
+            report = import_glb(archive, DATA/identifier) if archive.suffix == '.glb' else process(archive, DATA/identifier, progress)
         with LOCK:
             JOBS[identifier].update(state='done', report=report)
     except Exception as error:
@@ -84,7 +85,8 @@ class Handler(BaseHTTPRequestHandler):
             JOBS[identifier] = {'state': 'running', 'progress': 0, 'message': 'Принимаю архив'}
         folder = DATA/identifier
         folder.mkdir()
-        archive = folder/'source.zip'
+        extension = '.glb' if self.headers.get('Content-Type') == 'model/gltf-binary' else '.zip'
+        archive = folder/('source' + extension)
         try:
             with archive.open('wb') as out:
                 remaining = length

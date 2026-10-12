@@ -50,7 +50,9 @@ async function load(job,nextMode=mode){
   model.traverse(o=>{if(o.isPoints){o.material.size=.025;o.material.sizeAttenuation=true}});
   scene.add(model);$('empty').hidden=true;clearMarks();fit();error('');
   $('exports').replaceChildren();
-  for(const [label,name] of [['GLB',file],['PLY',file.replace('.glb','.ply')]]){
+  const downloads=job.report.importedModel ? [['GLB',file]] : [['GLB',file],['PLY',file.replace('.glb','.ply')]];
+  $('points').disabled=!!job.report.importedModel&&job.report.mesh;
+  for(const [label,name] of downloads){
    const a=document.createElement('a');a.textContent=label;a.href=`/data/${job.id}/${name}`;a.download=name;$('exports').append(a);
   }
  }catch(e){error('Не удалось открыть модель: '+e.message)}
@@ -81,7 +83,8 @@ $('file').onchange=async e=>{
  const file=e.target.files[0];if(!file)return;
  $('status').textContent='Передаю архив…';$('progress').hidden=false;error('');
  try{
-  const response=await fetch('/api/import',{method:'POST',headers:{'Content-Type':'application/zip'},body:file});
+  const type=file.name.toLowerCase().endsWith('.glb')?'model/gltf-binary':'application/zip';
+  const response=await fetch('/api/import',{method:'POST',headers:{'Content-Type':type},body:file});
   const data=await response.json();if(!response.ok)throw new Error(data.error);
   $('status').textContent='Началась обработка';
  }catch(e){error(e.message);$('progress').hidden=true}
@@ -94,7 +97,7 @@ async function refresh(){
   $('jobs').replaceChildren();
   for(const job of jobs){
    const button=document.createElement('button');
-   button.textContent=job.state==='done'?`Участок ${job.id.slice(0,6)} · ${job.report.frames} кадров`:job.message;
+   button.textContent=job.state==='done'?`Участок ${job.id.slice(0,6)} · ${job.report.importedModel?'импорт GLB':job.report.frames+' кадров'}`:job.message;
    button.disabled=job.state!=='done';button.onclick=()=>load(job);$('jobs').append(button);
    if(job.state==='running'){$('status').textContent=job.message;$('progress').hidden=false;$('progress').value=job.progress}
   }

@@ -8,6 +8,7 @@ from io import BytesIO
 import numpy as np
 from PIL import Image
 from scipy.spatial import cKDTree
+import gpu
 
 
 def unproject(depth, confidence, rgb, meta, stride=2):
@@ -32,7 +33,14 @@ def unproject(depth, confidence, rgb, meta, stride=2):
     return points, colors
 
 
-def fuse(points, colors, voxel=0.015):
+def fuse(points, colors, voxel=0.015, backend='auto'):
+    if backend == 'cuda' or (backend == 'auto' and len(points) >= 250000 and gpu.cupy_backend() is not None):
+        try:
+            return gpu.fuse_cuda(points, colors, voxel)
+        except Exception:
+            if backend == 'cuda':
+                raise
+    gpu.last_backend = 'CPU'
     cells = np.floor(points / voxel).astype(np.int64)
     _, inverse, counts = np.unique(cells, axis=0, return_inverse=True, return_counts=True)
     xyz = np.zeros((len(counts), 3), np.float64)
@@ -174,6 +182,7 @@ def process(archive, destination, progress=lambda percent, message: None):
         report = {'frames': count, 'points': len(points), 'mesh': mesh_available,
                   'bounds': [points.min(axis=0).tolist(), points.max(axis=0).tolist()],
                   'trajectory': trajectory, 'voxelMeters': 0.015, 'accuracyVerified': False,
+                  'fusionBackend': gpu.last_backend,
                   'warnings': ['Точность не проверена контрольными замерами.',
                                'Цвет сетки назначен ближайшими измеренными точками; фототекстуры пока не построены.',
                                'Обрабатывается один участок. Совмещение отдельных проходов пока не реализовано.']}

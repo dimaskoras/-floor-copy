@@ -9,6 +9,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 from reconstruct import unproject, fuse, process, read_mesh, write_glb
+from import_model import import_glb
 
 
 def metadata(w=16, h=12):
@@ -31,6 +32,20 @@ def fixture(path):
 
 
 class ReconstructionTests(unittest.TestCase):
+    def test_import_self_contained_glb(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp)
+            write_glb(root/'source.glb',np.array([[0,0,-2],[1,0,-2],[0,1,-2]],dtype='<f4'),np.full((3,3),100,dtype='u1'),np.array([[0,1,2]]))
+            report=import_glb(root/'source.glb',root/'out')
+            self.assertTrue(report['mesh'])
+            self.assertTrue(report['importedModel'])
+            self.assertEqual((root/'source.glb').read_bytes(),(root/'out'/'mesh.glb').read_bytes())
+
+    def test_invalid_glb_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);(root/'source.glb').write_bytes(b'invalid')
+            with self.assertRaises(ValueError):import_glb(root/'source.glb',root/'out')
+
     def test_camera_coordinate_axes(self):
         m = metadata(4,4)
         p, _ = unproject(np.full((4,4),2), np.full((4,4),2), Image.new('RGB',(4,4)), m, stride=1)
