@@ -97,7 +97,8 @@ async function loadProjects(){
 $('newProject').onclick=()=>{$('projectName').value='';$('projectDialog').showModal()};
 $('createProject').onclick=async()=>{try{const p=await post('/api/projects',{name:$('projectName').value});$('projectDialog').close();localStorage.setItem('3d-project',p.id);$('projectSelect').value='';project=null;current=null;clearSceneModels();clearMeasurement();await loadProjects();await refresh()}catch(e){error(e.message)}};
 $('projectSelect').onchange=async()=>{localStorage.setItem('3d-project',$('projectSelect').value);project=null;current=null;clearSceneModels();clearMeasurement();await loadProjects();await refresh()};
-$('importCompact').onclick=()=>$('file').click();
+$('importCompact').onclick=$('importFileButton').onclick=()=>$('file').click();
+$('planUpload').onclick=()=>$('planFile').click();
 $('scanSelect').onchange=()=>{const job=jobs.find(j=>j.id===$('scanSelect').value);if(job)selectJob(job)};
 $('file').onchange=async e=>{
  if(!project)return error('Сначала создай проект');const files=[...e.target.files];if(!files.length)return;
