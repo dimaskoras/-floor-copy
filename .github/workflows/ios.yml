@@ -1,0 +1,33 @@
+name: Build iPhone app
+on:
+  workflow_dispatch:
+  push:
+    paths: ['ios/**', '.github/workflows/ios.yml']
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install XcodeGen
+        run: brew install xcodegen
+      - name: Generate project
+        working-directory: ios
+        run: xcodegen generate
+      - name: Build device app without signing
+        working-directory: ios
+        run: xcodebuild -project FloorCopy.xcodeproj -scheme FloorCopy -configuration Release -sdk iphoneos -destination 'generic/platform=iOS' -derivedDataPath build/DerivedData CODE_SIGNING_ALLOWED=NO build
+      - name: Package for local signing
+        working-directory: ios
+        run: |
+          mkdir -p build/package/Payload
+          cp -R build/DerivedData/Build/Products/Release-iphoneos/FloorCopy.app build/package/Payload/
+          cd build/package
+          zip -qr ../FloorCopy-unsigned.ipa Payload
+      - uses: actions/upload-artifact@v4
+        with:
+          name: FloorCopy-iPhone
+          path: ios/build/FloorCopy-unsigned.ipa
+          retention-days: 7

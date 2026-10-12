@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="ru">
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Floor Copy — просмотр сканов</title>
+<link rel="stylesheet" href="style.css">
+<script type="importmap">{"imports":{"three":"/vendor/three.module.js","three/addons/":"/vendor/addons/"}}</script>
+<body>
+<aside>
+ <div class="brand">◈ FLOOR COPY <span>0.1</span></div>
+ <h1>Твой этаж<br>в пространстве</h1>
+ <p class="muted">Импортируй участок, снятый на iPhone. Все данные обрабатываются на этом компьютере.</p>
+ <label class="upload">＋ Импортировать ZIP<input id="file" type="file" accept=".zip"></label>
+ <p id="status" role="status">Готов к импорту</p><progress id="progress" max="100" value="0" hidden></progress>
+ <h2>Участки</h2><div id="jobs" class="jobs"></div>
+ <h2>Просмотр</h2>
+ <div class="row"><button id="mesh">Сетка</button><button id="points">Точки</button></div>
+ <div class="row"><button id="fit">Весь участок</button><button id="top">Сверху</button></div>
+ <h2>Измерение</h2>
+ <button id="measure" aria-pressed="false">Выбрать две точки</button>
+ <p id="distance">Нажми кнопку, затем две точки модели.</p>
+ <p class="muted small">Размеры ориентировочные. Сравни с независимыми замерами. Шаг объединения точек 1,5 см не означает такую же точность.</p>
+ <h2>Экспорт</h2><div id="exports" class="row"></div>
+ <details><summary>Что умеет первая версия</summary><p>Один непрерывный проход, цветные точки, сетка ARKit, измерения и экспорт. Совмещение разных проходов, фототекстуры и редактирование стен появятся после проверки реальных сканов.</p></details>
+</aside>
+<main><div id="viewport"></div><div id="empty"><span>◈</span><h2>Начни с небольшого участка</h2><p>Коридор с поворотом и дверью — хороший первый тест.</p></div><div class="badge">Метры · Y вверх · точность не проверена</div><div id="error" hidden></div></main>
+<script type="module" src="app.js"></script>
+</body></html>

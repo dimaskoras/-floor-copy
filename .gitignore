@@ -1,0 +1,9 @@
+.DS_Store
+build/
+.venv/
+__pycache__/
+data/
+*.ipa
+*.zip
+*.xcodeproj/
+node_modules/
