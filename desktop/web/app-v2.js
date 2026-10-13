@@ -16,6 +16,7 @@ scene.add(new THREE.HemisphereLight(0xffffff,0x8796a5,2));
 const grid=new THREE.GridHelper(30,30,0x53616d,0x303e49);scene.add(grid);
 const marks=new THREE.Group();scene.add(marks);
 let project=null,jobs=[],current=null,mode='mesh',model=null,before=null,after=null,cache=new Map(),request=0,measurement=null,picked=[],drag=null,selection=null,busyUpload=false;
+let cutLevel=2.4;
 const ray=new THREE.Raycaster();ray.firstHitOnly=true;ray.params.Points.threshold=.02;
 const vector=new THREE.Vector3(),pointer=new THREE.Vector2();
 function error(text){$('error').textContent=text;$('error').hidden=!text}
@@ -71,7 +72,7 @@ async function show(nextMode='mesh',reset=false){
   $('heatLegend').hidden=mode!=='difference';
   $('variant').textContent={mesh:'Исходная модель',corrected:'Обработка v2 · ограниченные правки',compare:'Один ракурс · два результата',difference:'Сдвиг вершин относительно исходного GLB',points:'Облако точек LAS',old:'Архив v1 · содержит дефекты'}[mode];
   $('variant').dataset.ready=mode;
-  if(reset)fit();wire();updateInspector();
+  if(reset)fit();wire();applyCut();updateInspector();
  }catch(e){if(ticket!==request)return;error(e.message);$('viewMode').value=mode}
 }
 function wire(){for(const root of cache.values())root.traverse(o=>{if(o.isMesh)o.material.wireframe=$('wire').checked})}
@@ -113,7 +114,8 @@ async function runProcessing(){if(!current)return error('Выбери скан')
 $('process').onclick=runProcessing;$('processCompact').onclick=runProcessing;
 $('viewMode').onchange=()=>{clearMeasurement();if($('viewMode').value==='map')$('mapOpen').click();else show($('viewMode').value)};$('fit').onclick=()=>fit();$('top').onclick=()=>fit(true);$('wire').onchange=wire;
 const focusButton=document.createElement('button');focusButton.textContent='Развернуть вид';focusButton.id='focusView';focusButton.onclick=()=>{document.body.classList.toggle('sceneFocus');focusButton.textContent=document.body.classList.contains('sceneFocus')?'Вернуть панели':'Развернуть вид'};document.querySelector('.toolbar').append(focusButton);
-$('cut').onchange=()=>{renderer.clippingPlanes=$('cut').checked?[new THREE.Plane(new THREE.Vector3(0,-1,0),2.4)]:[]};
+function applyCut(){if(model){const box=new THREE.Box3().setFromObject(model),height=box.max.y-box.min.y;cutLevel=height>1.8?box.min.y+height*.92:box.max.y+1}renderer.clippingPlanes=$('cut').checked?[new THREE.Plane(new THREE.Vector3(0,-1,0),cutLevel)]:[]}
+$('cut').onchange=applyCut;
 document.querySelectorAll('[data-tab]').forEach(button=>button.onclick=()=>{document.querySelectorAll('[data-tab]').forEach(b=>b.classList.toggle('active',b===button));for(const id of ['measurePanel','planPanel','qualityPanel','calibrationPanel','mapPanel'])$(id).hidden=id!==button.dataset.tab});
 function renderPlan(){
  const p=project?.plan;const done=p?.state==='done';$('planUpload').disabled=p?.state==='running';$('planStatus').textContent=!p?'Планировка не загружена':p.state==='running'?'Анализирую локально…':p.state==='error'?'Ошибка: '+p.error:`Найдено ${p.analysis.segmentsPixels.length} сегментов. Масштаб: ${p.analysis.metersPerPixel?.toFixed(5)||'не определён'} м/пиксель · требует проверки.`;
@@ -122,11 +124,11 @@ function renderPlan(){
  $('planDimensions').replaceChildren();for(const d of p?.analysis?.recognizedDimensions||[]){const span=document.createElement('span');span.className='chip';span.textContent=d.valueMeters.toFixed(2)+' м';$('planDimensions').append(span)}
 }
 $('planFile').onchange=async e=>{if(!project)return error('Сначала создай проект');const file=e.target.files[0];if(!file)return;try{await api('/api/plan',{method:'POST',headers:{'X-Project-ID':project.id,'X-File-Name':encodeURIComponent(file.name)},body:file});await loadProjects()}catch(e){error(e.message)}$('planFile').value=''};
-$('planModel').onclick=async()=>{try{const gltf=await new GLTFLoader().loadAsync(`/data/projects/${project.id}/plan-model.glb`);for(const root of cache.values())root.visible=false;const key='plan/'+project.id;if(cache.has(key)){scene.remove(cache.get(key));dispose(cache.get(key))}cache.set(key,gltf.scene);scene.add(gltf.scene);model=gltf.scene;before=after=null;mode='plan';$('mapStage').hidden=true;$('variant').textContent='Модель плана · масштаб OCR, условные стены';for(const id of ['compareLine','compareControl','beforeLabel','afterLabel','heatLegend'])$(id).hidden=true;fit();$('tool').value='navigate';configureTool();$('viewMode').value='plan';$('variant').dataset.ready='plan';updateInspector();$('empty').hidden=true}catch(e){error(e.message)}};
+$('planModel').onclick=async()=>{try{const gltf=await new GLTFLoader().loadAsync(`/data/projects/${project.id}/plan-model.glb`);for(const root of cache.values())root.visible=false;const key='plan/'+project.id;if(cache.has(key)){scene.remove(cache.get(key));dispose(cache.get(key))}cache.set(key,gltf.scene);scene.add(gltf.scene);model=gltf.scene;before=after=null;mode='plan';$('mapStage').hidden=true;$('variant').textContent='Модель плана · масштаб OCR, условные стены';for(const id of ['compareLine','compareControl','beforeLabel','afterLabel','heatLegend'])$(id).hidden=true;fit();$('tool').value='navigate';configureTool();$('viewMode').value='plan';$('variant').dataset.ready='plan';applyCut();updateInspector();$('empty').hidden=true}catch(e){error(e.message)}};
 function clearMeasurement(){for(const o of [...marks.children]){marks.remove(o);dispose(o)}picked=[];selection=null;measurement=null;$('selectionRect').hidden=true;$('measurementResult').textContent='Измерение не выбрано'}
 function dot(p){const m=new THREE.Mesh(new THREE.SphereGeometry(.02,10,10),new THREE.MeshBasicMaterial({color:0xffd477,depthTest:false}));m.position.fromArray(p);marks.add(m)}
 function line(points,close=false){const data=points.map(p=>new THREE.Vector3(...p));if(close&&data.length)data.push(data[0].clone());marks.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(data),new THREE.LineBasicMaterial({color:0xffd477,depthTest:false})))}
-function hitAt(x,y){if(!model)return null;const r=renderer.domElement.getBoundingClientRect();pointer.set((x-r.left)/r.width*2-1,-(y-r.top)/r.height*2+1);ray.firstHitOnly=!$('cut').checked;ray.setFromCamera(pointer,camera);const hits=ray.intersectObject(model,true);return hits.find(h=>!$('cut').checked||h.point.y<=2.4)||null}
+function hitAt(x,y){if(!model)return null;const r=renderer.domElement.getBoundingClientRect();pointer.set((x-r.left)/r.width*2-1,-(y-r.top)/r.height*2+1);ray.firstHitOnly=!$('cut').checked;ray.setFromCamera(pointer,camera);const hits=ray.intersectObject(model,true);return hits.find(h=>!$('cut').checked||h.point.y<=cutLevel)||null}
 function updateMeasurement(finish=false){
  const tool=$('tool').value;if(picked.length<(['polygon','surface'].includes(tool)?3:2)){measurement=null;if(['polygon','surface'].includes(tool))$('measurementResult').textContent='Для площади нужно минимум 3 точки';return}
  let value=0;for(let i=1;i<picked.length;i++)value+=distance(picked[i-1],picked[i]);
@@ -155,7 +157,7 @@ function selectObject(){
  const sample=[];for(let y=0;y<8;y++)for(let x=0;x<8;x++){const h=hitAt(rect.x0+(x+.5)/8*(rect.x1-rect.x0),rect.y0+(y+.5)/8*(rect.y1-rect.y0));if(h)sample.push(h.distance)}
  if(!sample.length)return error('В рамке нет видимой поверхности');sample.sort((a,b)=>a-b);const near=sample[Math.floor(sample.length*.15)]-.04,shownDepth=Number($('selectionDepth').value),depth=shownDepth/metricFactor();if(!Number.isFinite(shownDepth)||shownDepth<.02||shownDepth>5)return error('Глубина выделения: 0,02–5 м');
  const points=[],viewport=renderer.domElement.getBoundingClientRect();model.updateMatrixWorld(true);
- model.traverse(o=>{if(!o.geometry?.attributes.position)return;const positions=o.geometry.attributes.position;for(let i=0;i<positions.count;i++){vector.fromBufferAttribute(positions,i).applyMatrix4(o.matrixWorld);if($('cut').checked&&vector.y>2.4)continue;const d=vector.distanceTo(camera.position);if(d<near||d>near+depth)continue;const world=vector.toArray();vector.project(camera);if(vector.z<-1||vector.z>1)continue;const x=viewport.left+(vector.x+1)/2*viewport.width,y=viewport.top+(1-vector.y)/2*viewport.height;if(x>=rect.x0&&x<=rect.x1&&y>=rect.y0&&y<=rect.y1)points.push(world)}});
+ model.traverse(o=>{if(!o.geometry?.attributes.position)return;const positions=o.geometry.attributes.position;for(let i=0;i<positions.count;i++){vector.fromBufferAttribute(positions,i).applyMatrix4(o.matrixWorld);if($('cut').checked&&vector.y>cutLevel)continue;const d=vector.distanceTo(camera.position);if(d<near||d>near+depth)continue;const world=vector.toArray();vector.project(camera);if(vector.z<-1||vector.z>1)continue;const x=viewport.left+(vector.x+1)/2*viewport.width,y=viewport.top+(1-vector.y)/2*viewport.height;if(x>=rect.x0&&x<=rect.x1&&y>=rect.y0&&y<=rect.y1)points.push(world)}});
  if(points.length<3)return error('Слишком мало точек. Увеличь рамку или глубину');
  const result=dimensions(points),scale=metricFactor(),[a,b,h]=result.size.map(v=>v*scale);
  $('measurementResult').textContent=`Габариты выделения\nA: ${a.toFixed(3)} м · B: ${b.toFixed(3)} м\nВысота: ${h.toFixed(3)} м\nВершин: ${points.length.toLocaleString('ru')}\nПроверь, что фон не попал в выделение.`;
