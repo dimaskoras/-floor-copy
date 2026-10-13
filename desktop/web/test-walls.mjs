@@ -1,0 +1,13 @@
+import assert from 'node:assert/strict';
+import {withoutWallFaces} from './walls.js';
+const vertices=[0,0,0, 2,0,0, 2,2.5,0, 0,2.5,0, 0,0,2, 2,0,2];
+const index=[0,1,2,0,2,3,0,4,5,0,5,1];
+const planes=[{id:4,kind:'vertical',areaM2:5,bounds:[[0,0,0],[2,2.5,0]],normal:[0,0,1],constant:0}];
+assert.deepEqual([...withoutWallFaces(vertices,index,planes)],[0,4,5,0,5,1]);
+assert.deepEqual([...withoutWallFaces(vertices,index,[])],index);
+assert.deepEqual([...withoutWallFaces(vertices,index,[{...planes[0],bounds:[[0,0,0],[2,.75,0]]}])],index);
+console.log('Wall preview: removes architectural wall faces, retains floor and short furniture: passed');
+assert.deepEqual([...withoutWallFaces(vertices,index,planes,new Set())],index);
+assert.deepEqual([...withoutWallFaces(vertices,index,planes,new Set([4]))],[0,4,5,0,5,1]);
+assert.deepEqual([...withoutWallFaces(vertices,index,planes,new Set([5]))],index);
+console.log('Selective wall IDs and restoration: passed');

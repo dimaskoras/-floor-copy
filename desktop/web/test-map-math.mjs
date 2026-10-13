@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import {mapPoint,fitTwoPoints,planMetric} from './map-math.js';
+import {mapPoint,unmapPoint,fitTwoPoints,planMetric} from './map-math.js';
 const t=fitTwoPoints([[1,0,2],[3,0,2]],[[100,200],[100,300]]);
 for(const [p,q] of [[[1,0,2],[100,200]],[[3,0,2],[100,300]]])assert.ok(Math.hypot(...mapPoint(p,t).map((v,i)=>v-q[i]))<1e-8);
 assert.equal(planMetric([[0,0],[100,0]],50,1.1).value,2.2);
@@ -7,3 +7,11 @@ assert.ok(Math.abs(planMetric([[0,0],[100,0],[100,150],[0,150]],50,1.1,true).val
 assert.equal(planMetric([[0,0],[100,0]],50,1,true),null);
 assert.throws(()=>fitTwoPoints([[0,0,0],[0,1,0]],[[0,0],[10,10]]));
 console.log('Map fit, calibrated distances, calibrated areas and invalid anchors: passed');
+const stretched={scale:29.01,widthScale:1.89,angle:3.16,x:343,y:323};
+const raw=[[0,0,0],[8,0,0],[8,0,2.187],[0,0,2.187]],mapped=raw.map(p=>mapPoint(p,stretched));
+for(let i=0;i<raw.length;i++)assert.ok(Math.hypot(...unmapPoint(mapped[i],stretched).map((v,j)=>v-raw[i][j]))<1e-8);
+assert.ok(Math.abs(planMetric([mapped[0],mapped[1]],stretched).value-8)<1e-8);
+assert.ok(Math.abs(planMetric([mapped[1],mapped[2]],stretched,1.1).value-2.4057)<1e-8);
+assert.ok(Math.abs(planMetric(mapped,stretched,1,true).value-17.496)<1e-8);
+assert.throws(()=>planMetric(mapped,{...stretched,widthScale:0}));
+console.log('Separate overlay width: inverse projection, lengths, areas and validation passed');

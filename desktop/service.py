@@ -15,6 +15,7 @@ from plan_analysis import analyze_plan
 from reconstruct import process
 from mpunav import catalog,fetch_map
 from calibration import reference,scale_glb
+from floorplan import build as build_floorplan
 
 ROOT=Path(__file__).resolve().parent
 DATA=ROOT.parent/'data';DATA.mkdir(exist_ok=True)
@@ -50,6 +51,18 @@ def compute(identifier):
             report['availableFiles']=[p.name for p in folder.iterdir() if p.name in {'mesh.glb','mesh.ply','points.glb','points.ply','straightened.glb','planes.json','las.json'}]
             report['legacyResult']=(folder/'previous-v1.glb').exists()
             if (folder/'plan-comparison.png').exists():report['planComparison']='plan-comparison.png'
+            with STORE.lock:
+                p=STORE.get(JOBS[identifier]['project']);c=p.get('calibration');base=p.get('baseline',{})
+                if c and c['scan']==identifier:
+                    for name in c.get('exports',[]):
+                        source={'calibrated.glb':'mesh.glb','calibrated-v2.glb':'straightened.glb','calibrated-points.glb':'points.glb'}.get(name)
+                        if source and (folder/source).exists():scale_glb(folder/source,folder/name,c['factor'])
+                if base.get('exports',{}).get('scan')==identifier:
+                    for name in base['exports']['files']:
+                        source={'baseline-calibrated.glb':'mesh.glb','baseline-calibrated-v2.glb':'straightened.glb','baseline-calibrated-points.glb':'points.glb'}.get(name)
+                        if source and (folder/source).exists():scale_glb(folder/source,folder/name,base['factor'])
+                if p.get('floorplan',{}).get('scan')==identifier:p['floorplan']['stale']=True
+                STORE.save(p)
             atomic_json(folder/'report.json',report)
         with LOCK:
             JOBS[identifier].update(state='done',progress=100,message='Обработка v2 завершена',report=report)
@@ -93,17 +106,18 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         parsed=urlsplit(self.path);path=parsed.path;query=parse_qs(parsed.query)
         try:
-            if path=='/api/projects':return self.reply(STORE.all())
+            if path=='/api/projects':return self.reply(STORE.all(query.get('archived',['false'])[0]=='true'))
             if path=='/api/mpunav/catalog':return self.reply(catalog(DATA))
             if path=='/api/jobs':
                 project_id=query.get('project',[''])[0]
                 project=STORE.get(project_id) if project_id else None
-                with LOCK:jobs=[dict(id=k,**v) for k,v in JOBS.items() if project is None or k in project['scans']]
+                active_scans={s for p in STORE.all() for s in p['scans']}
+                with LOCK:jobs=[dict(id=k,**v) for k,v in JOBS.items() if k in (active_scans if project is None else project['scans'])]
                 return self.reply(jobs)
-            if path=='/api/health':return self.reply({'status':'ok','root':str(ROOT.parent),'version':'0.3'})
+            if path=='/api/health':return self.reply({'status':'ok','root':str(ROOT.parent),'version':'0.4'})
             base=DATA if path.startswith('/data/') else ROOT/'web'
             target=(base/(path[6:] if path.startswith('/data/') else 'index.html' if path=='/' else path.lstrip('/'))).resolve()
-            if not target.is_relative_to(base.resolve()) or not target.is_file() or target.suffix.lower() not in {'.html','.js','.css','.json','.glb','.ply','.png','.jpg','.jpeg','.svg','.pdf','.woff2'}:return self.reply({'error':'Не найдено'},404)
+            if not target.is_relative_to(base.resolve()) or not target.is_file() or target.suffix.lower() not in {'.html','.js','.css','.json','.glb','.ply','.png','.jpg','.jpeg','.svg','.pdf','.woff2','.dxf','.csv'}:return self.reply({'error':'Не найдено'},404)
             self.send_response(200);self.send_header('Content-Type',mimetypes.guess_type(target.name)[0] or 'application/octet-stream');self.send_header('Content-Length',str(target.stat().st_size));self.send_header('Cache-Control','no-store');self.end_headers()
             with target.open('rb') as stream:
                 while chunk:=stream.read(1024**2):self.wfile.write(chunk)
@@ -113,16 +127,48 @@ class Handler(BaseHTTPRequestHandler):
         try:
             path=urlsplit(self.path).path
             if path=='/api/projects':return self.reply(STORE.create(self.read_json().get('name')),201)
+            if path=='/api/projects/archive':
+                data=self.read_json();p=STORE.get(data['project'])
+                if any(JOBS[s]['state']=='running' for s in p['scans'] if s in JOBS):raise ValueError('Дождись завершения обработки')
+                return self.reply(STORE.archive(p['id'],data.get('archived',True)))
             if path=='/api/measurements':
                 data=self.read_json();p=STORE.get(data['project']);items=data['items']
                 if not isinstance(items,list) or len(items)>1000:raise ValueError('Некорректные измерения')
                 p['measurements']=items;STORE.save(p);return self.reply({'saved':True})
+            if path=='/api/baseline':
+                data=self.read_json();p=STORE.get(data['project'])
+                profile=DATA/'default-calibration.json'
+                if not profile.exists():raise ValueError('Базовый профиль ещё не рассчитан по предыдущему скану')
+                if data.get('export'):
+                    scan=data['scan']
+                    if scan not in p['scans']:raise ValueError('Скан не принадлежит проекту')
+                    if JOBS[scan]['state']=='running':raise ValueError('Дождись завершения обработки')
+                    base=p.get('baseline')
+                    if not base or not base.get('enabled'):raise ValueError('Включи базовую поправку')
+                    files=[]
+                    for source,name in [('mesh.glb','baseline-calibrated.glb'),('straightened.glb','baseline-calibrated-v2.glb'),('points.glb','baseline-calibrated-points.glb')]:
+                        if (DATA/scan/source).exists():scale_glb(DATA/scan/source,DATA/scan/name,base['factor']);files.append(name)
+                    base['exports']={'scan':scan,'files':files}
+                else:
+                    p['baseline']=json.loads(profile.read_text(encoding='utf-8'));p['baseline']['enabled']=bool(data.get('enabled',True))
+                STORE.save(p);return self.reply(p['baseline'])
+            if path=='/api/floorplan':
+                data=self.read_json();p=STORE.get(data['project']);scan=data['scan']
+                if scan not in p['scans']:raise ValueError('Скан не принадлежит проекту')
+                if JOBS[scan]['state']=='running':raise ValueError('Дождись завершения обработки')
+                if not JOBS[scan]['report'].get('mesh'):raise ValueError('Для плана нужна сетка GLB. Облако LAS можно просматривать и измерять отдельно.')
+                c=p.get('calibration');base=p.get('baseline',{});factor=c['factor'] if c and c['scan']==scan else base.get('factor',1) if base.get('enabled') else 1
+                with COMPUTE:result=build_floorplan(DATA/scan/'mesh.glb',DATA/scan,factor,data.get('sectionMeters',1.1),p['name'],data.get('sheetScale',100))
+                result['scan']=scan;p['floorplan']=result;STORE.save(p);return self.reply(result)
             if path=='/api/calibration':
                 data=self.read_json();p=STORE.get(data['project']);scan=data['scan']
                 if scan not in p['scans']:raise ValueError('Скан не принадлежит проекту')
                 if JOBS[scan]['state']=='running':raise ValueError('Дождись завершения обработки')
                 mode=data.get('mode','set')
-                if mode=='reset':p['calibration']=None;STORE.save(p);return self.reply({'saved':True})
+                if mode=='reset':
+                    p['calibration']=None
+                    if p.get('baseline'):p['baseline']['enabled']=False
+                    STORE.save(p);return self.reply({'saved':True})
                 item=reference(data['points'],data['realMeters'],data.get('name','Контрольный размер'))
                 if mode=='check':
                     if not p.get('calibration') or p['calibration']['scan']!=scan:raise ValueError('Сначала задай масштаб этого скана')
@@ -141,9 +187,9 @@ class Handler(BaseHTTPRequestHandler):
             if path=='/api/mpunav/save':
                 data=self.read_json();p=STORE.get(data['project'])
                 if not p.get('mpunav'):raise ValueError('Сначала загрузи карту')
-                transform=data['transform']
+                transform={k:float(data['transform'][k]) for k in ['scale','angle','x','y']};transform['widthScale']=float(data['transform'].get('widthScale',1))
                 import math
-                if any(not math.isfinite(float(transform[k])) for k in ['scale','angle','x','y']) or not 0<float(transform['scale'])<10000:raise ValueError('Некорректная привязка')
+                if any(not math.isfinite(float(transform[k])) for k in ['scale','angle','x','y']) or not 0<float(transform['scale'])<10000 or not math.isfinite(transform['widthScale']) or not .1<=transform['widthScale']<=10:raise ValueError('Некорректная привязка')
                 scan_id=data.get('scanId')
                 if scan_id is not None and scan_id not in p['scans']:raise ValueError('Привязка: скан не принадлежит проекту')
                 points=data.get('controlPoints',[])
@@ -159,7 +205,7 @@ class Handler(BaseHTTPRequestHandler):
                 t=mapping['transform'];c,s=math.cos(t['angle']),math.sin(t['angle'])
                 for point in points:
                     if len(point)!=3 or not all(math.isfinite(float(v)) for v in point):raise ValueError('Некорректная точка')
-                    x=t['scale']*(point[0]*c-point[2]*s)+t['x'];y=t['scale']*(point[0]*s+point[2]*c)+t['y']
+                    x=t['scale']*(point[0]*c-point[2]*t.get('widthScale',1)*s)+t['x'];y=t['scale']*(point[0]*s+point[2]*t.get('widthScale',1)*c)+t['y']
                     ET.SubElement(group,ns+'circle',{'cx':str(x),'cy':str(y),'r':'1.5','fill':'#63e3d4','opacity':'.65'})
                 ET.ElementTree(root).write(STORE.root/p['id']/'mpunav-with-scan.svg',encoding='utf-8',xml_declaration=True)
                 return self.reply({'url':f"/data/projects/{p['id']}/mpunav-with-scan.svg"})
