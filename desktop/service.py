@@ -14,6 +14,7 @@ from planar import analyze
 from plan_analysis import analyze_plan
 from reconstruct import process
 from mpunav import catalog,fetch_map
+from calibration import reference,scale_glb
 
 ROOT=Path(__file__).resolve().parent
 DATA=ROOT.parent/'data';DATA.mkdir(exist_ok=True)
@@ -46,7 +47,7 @@ def compute(identifier):
                 progress(identifier,55,'GPU: поиск плоскостей и безопасное выравнивание')
                 analysis=analyze(folder/'mesh.glb',folder)
                 report.update(straightened=True,processingVersion=2,planarAnalysis={k:v for k,v in analysis.items() if k!='planes'})
-            report['availableFiles']=[p.name for p in folder.iterdir() if p.name in {'mesh.glb','points.glb','points.ply','straightened.glb','planes.json','las.json'}]
+            report['availableFiles']=[p.name for p in folder.iterdir() if p.name in {'mesh.glb','mesh.ply','points.glb','points.ply','straightened.glb','planes.json','las.json'}]
             report['legacyResult']=(folder/'previous-v1.glb').exists()
             if (folder/'plan-comparison.png').exists():report['planComparison']='plan-comparison.png'
             atomic_json(folder/'report.json',report)
@@ -99,7 +100,7 @@ class Handler(BaseHTTPRequestHandler):
                 project=STORE.get(project_id) if project_id else None
                 with LOCK:jobs=[dict(id=k,**v) for k,v in JOBS.items() if project is None or k in project['scans']]
                 return self.reply(jobs)
-            if path=='/api/health':return self.reply({'status':'ok','root':str(ROOT.parent),'version':'0.2'})
+            if path=='/api/health':return self.reply({'status':'ok','root':str(ROOT.parent),'version':'0.3'})
             base=DATA if path.startswith('/data/') else ROOT/'web'
             target=(base/(path[6:] if path.startswith('/data/') else 'index.html' if path=='/' else path.lstrip('/'))).resolve()
             if not target.is_relative_to(base.resolve()) or not target.is_file() or target.suffix.lower() not in {'.html','.js','.css','.json','.glb','.ply','.png','.jpg','.jpeg','.svg','.pdf','.woff2'}:return self.reply({'error':'Не найдено'},404)
@@ -116,6 +117,25 @@ class Handler(BaseHTTPRequestHandler):
                 data=self.read_json();p=STORE.get(data['project']);items=data['items']
                 if not isinstance(items,list) or len(items)>1000:raise ValueError('Некорректные измерения')
                 p['measurements']=items;STORE.save(p);return self.reply({'saved':True})
+            if path=='/api/calibration':
+                data=self.read_json();p=STORE.get(data['project']);scan=data['scan']
+                if scan not in p['scans']:raise ValueError('Скан не принадлежит проекту')
+                if JOBS[scan]['state']=='running':raise ValueError('Дождись завершения обработки')
+                mode=data.get('mode','set')
+                if mode=='reset':p['calibration']=None;STORE.save(p);return self.reply({'saved':True})
+                item=reference(data['points'],data['realMeters'],data.get('name','Контрольный размер'))
+                if mode=='check':
+                    if not p.get('calibration') or p['calibration']['scan']!=scan:raise ValueError('Сначала задай масштаб этого скана')
+                    item['residualMeters']=item['rawMeters']*p['calibration']['factor']-item['realMeters']
+                    p['calibration'].setdefault('checks',[]).append(item)
+                elif mode=='set':
+                    p['calibration']={'scan':scan,'factor':item['factor'],'reference':item,'checks':[],'accuracyVerified':False}
+                    files=[]
+                    for source,name in [('mesh.glb','calibrated.glb'),('straightened.glb','calibrated-v2.glb'),('points.glb','calibrated-points.glb')]:
+                        if (DATA/scan/source).exists():scale_glb(DATA/scan/source,DATA/scan/name,item['factor']);files.append(name)
+                    p['calibration']['exports']=files
+                else:raise ValueError('Некорректный режим калибровки')
+                STORE.save(p);return self.reply(p['calibration'])
             if path=='/api/mpunav/map':
                 data=self.read_json();p=STORE.get(data['project']);mapping=fetch_map(data['name'],DATA,STORE.root/p['id']);p['mpunav']=mapping;STORE.save(p);return self.reply(mapping)
             if path=='/api/mpunav/save':
@@ -124,7 +144,11 @@ class Handler(BaseHTTPRequestHandler):
                 transform=data['transform']
                 import math
                 if any(not math.isfinite(float(transform[k])) for k in ['scale','angle','x','y']) or not 0<float(transform['scale'])<10000:raise ValueError('Некорректная привязка')
-                p['mpunav']['transform']=transform;p['mpunav']['anchors']=data.get('anchors',[]);STORE.save(p);return self.reply({'saved':True})
+                scan_id=data.get('scanId')
+                if scan_id is not None and scan_id not in p['scans']:raise ValueError('Привязка: скан не принадлежит проекту')
+                points=data.get('controlPoints',[])
+                if not isinstance(points,list) or len(points)>1000 or any(not isinstance(v,list) or len(v)!=3 or not all(math.isfinite(float(n)) for n in v) for v in points):raise ValueError('Некорректные контрольные точки')
+                p['mpunav'].update(transform=transform,anchors=data.get('anchors',[]),scanId=scan_id,controlPoints=points);STORE.save(p);return self.reply({'saved':True})
             if path=='/api/mpunav/export':
                 import math,xml.etree.ElementTree as ET
                 data=self.read_json();p=STORE.get(data['project']);mapping=p.get('mpunav');points=data['points']
@@ -160,7 +184,11 @@ class Handler(BaseHTTPRequestHandler):
                 with LOCK:
                     job=JOBS[identifier]
                     if extension not in job['files']:job['files'].append(extension)
-                    if extension=='.glb':job['report']=import_glb(folder/'source.glb',folder)
+                    if extension=='.glb':
+                        try:job['report']=import_glb(folder/'source.glb',folder)
+                        except Exception as error:
+                            job.update(state='error',progress=0,message='Ошибка импорта: '+str(error));save_job(identifier)
+                            raise ValueError(job['message']) from error
                     job.update(state='ready',progress=0,message='Файлы загружены. Нажми «Обработать».')
                     save_job(identifier)
                 return self.reply({'id':identifier},201)
@@ -173,6 +201,7 @@ class Handler(BaseHTTPRequestHandler):
                 threading.Thread(target=compute,args=(identifier,),daemon=True).start();return self.reply({'id':identifier},202)
             if path=='/api/plan':
                 project_id=self.headers.get('X-Project-ID');p=STORE.get(project_id)
+                if p.get('plan',{} ) and p['plan'].get('state')=='running':raise ValueError('Дождись завершения анализа текущей планировки')
                 extension=Path(unquote(self.headers.get('X-File-Name',''))).suffix.lower()
                 if extension not in {'.png','.jpg','.jpeg','.pdf'}:raise ValueError('Планировка: PNG, JPG или PDF')
                 name='source-plan'+extension;self.upload(STORE.root/project_id/name,maximum=50*1024**2)
@@ -184,6 +213,9 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def load():
+    for p in STORE.all():
+        if p.get('plan') and p['plan'].get('state')=='running':
+            p['plan'].update(state='error',error='Анализ был прерван. Загрузи планировку повторно.');STORE.save(p)
     for path in DATA.glob('*/job.json'):
         job=json.loads(path.read_text(encoding='utf-8-sig'))
         if job['state']=='running':job.update(state='ready',message='Обработка была прервана. Запусти снова.')
@@ -202,7 +234,7 @@ def load():
 
 def main():
     parser=argparse.ArgumentParser();parser.add_argument('--port',type=int,default=4318);args=parser.parse_args()
-    load();print(f'Floor Copy 0.2: http://127.0.0.1:{args.port}',flush=True)
+    load();print(f'Floor Copy 0.3: http://127.0.0.1:{args.port}',flush=True)
     ThreadingHTTPServer(('127.0.0.1',args.port),Handler).serve_forever()
 
 

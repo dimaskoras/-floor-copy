@@ -34,7 +34,7 @@ def import_glb(source, destination):
     filename = 'mesh.glb' if mesh else 'points.glb'
     shutil.copyfile(source, destination/filename)
     count = sum(document['accessors'][p['attributes']['POSITION']]['count'] for p in primitives)
-    report = {'frames': None, 'points': count, 'mesh': mesh, 'importedModel': True,
+    report = {'frames': None, 'points': count, 'mesh': mesh, 'pointCloud': not mesh, 'importedModel': True,
               'availableFiles': [filename], 'accuracyVerified': False,
               'warnings': ['Импортирована готовая модель; исходные LiDAR-кадры и траектория недоступны.',
                            'Масштаб и точность нужно проверить контрольными замерами.']}

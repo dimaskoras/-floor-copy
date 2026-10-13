@@ -25,23 +25,39 @@ def import_las(source,destination,mesh_path=None,progress=lambda percent,message
         progress(20,'Совмещаю LAS с GLB')
         mesh=ScanMesh(mesh_path);tree=cKDTree(mesh.vertices)
         rng=np.random.default_rng(2026);sample=points[rng.choice(len(points),min(8000,len(points)),replace=False)]
-        ac=np.median(sample,axis=0);bc=np.median(mesh.vertices,axis=0);best=None
+        # UV seams make mesh vertex density uneven. A median-only seed can
+        # shift a long hallway by meters while matching its repeated walls.
+        seeds=[]
+        mesh_center=(np.quantile(mesh.vertices,.005,axis=0)+np.quantile(mesh.vertices,.995,axis=0))/2
         for degrees in range(0,360,5):
             angle=np.deg2rad(degrees);c,s=np.cos(angle),np.sin(angle)
-            rotation=np.array([[c,0,s],[0,1,0],[-s,0,c]]);translation=bc-ac@rotation.T
+            rotation=np.array([[c,0,s],[0,1,0],[-s,0,c]])
+            rotated=sample@rotation.T
+            centers=[np.median(mesh.vertices,axis=0)-np.median(rotated,axis=0),
+                     mesh_center-(np.quantile(rotated,.005,axis=0)+np.quantile(rotated,.995,axis=0))/2]
+            for translation in centers:
+                dist,_=tree.query(rotated+translation,workers=2)
+                score=np.mean(np.sort(dist)[:max(1,int(len(dist)*.8))])+.15*np.quantile(dist,.9)
+                seeds.append((score,rotation.copy(),translation.copy()))
+        selected=[]
+        for seed in sorted(seeds,key=lambda v:v[0]):
+            if all(np.linalg.norm(seed[1]-old[1])>.3 or np.linalg.norm(seed[2]-old[2])>.4 for old in selected):selected.append(seed)
+            if len(selected)==4:break
+        best=None
+        for _,rotation,translation in selected:
+            for _ in range(60):
+                proposed=sample@rotation.T+translation;dist,near=tree.query(proposed,workers=2)
+                keep=dist<=min(.25,np.quantile(dist,.8))
+                if keep.sum()<20:break
+                a,b=proposed[keep],mesh.vertices[near[keep]];a0,b0=a.mean(axis=0),b.mean(axis=0)
+                u,_,vt=np.linalg.svd((a-a0).T@(b-b0));r=vt.T@u.T
+                if np.linalg.det(r)<0:vt[-1]*=-1;r=vt.T@u.T
+                t=b0-a0@r.T;rotation=r@rotation;translation=translation@r.T+t
+                if np.linalg.norm(t)<1e-6 and np.linalg.norm(r-np.eye(3))<1e-6:break
             dist,_=tree.query(sample@rotation.T+translation,workers=2)
-            score=np.mean(np.sort(dist)[:max(1,int(len(dist)*.8))])
-            if best is None or score<best[0]:best=(score,rotation,translation)
+            score=np.mean(np.sort(dist)[:max(1,int(len(dist)*.8))])+.15*np.quantile(dist,.9)
+            if best is None or score<best[0]:best=(score,rotation.copy(),translation.copy())
         _,rotation,translation=best
-        for _ in range(60):
-            proposed=sample@rotation.T+translation;dist,near=tree.query(proposed,workers=2)
-            keep=dist<=min(.25,np.quantile(dist,.8))
-            if keep.sum()<20:raise ValueError('LAS и GLB не удалось уверенно совместить')
-            a,b=proposed[keep],mesh.vertices[near[keep]];a0,b0=a.mean(axis=0),b.mean(axis=0)
-            u,_,vt=np.linalg.svd((a-a0).T@(b-b0));r=vt.T@u.T
-            if np.linalg.det(r)<0:vt[-1]*=-1;r=vt.T@u.T
-            t=b0-a0@r.T;rotation=r@rotation;translation=translation@r.T+t
-            if np.linalg.norm(t)<1e-6 and np.linalg.norm(r-np.eye(3))<1e-6:break
         points=points@rotation.T+translation
         dist,_=tree.query(points[::max(1,len(points)//70000)],workers=2)
         alignment={'rotation':rotation.tolist(),'translation':translation.tolist(),

@@ -18,3 +18,11 @@ export function distance(a,b){return Math.hypot(...a.map((v,i)=>v-b[i]))}
 export function polygonArea(points){
  let sum=0;for(let i=0;i<points.length;i++){const a=points[i],b=points[(i+1)%points.length];sum+=a[0]*b[2]-b[0]*a[2]}return Math.abs(sum)/2;
 }
+export function surfaceArea(points){
+ if(points.length<3)return {area:0,maximumPlaneDeviation:0};
+ const center=points.reduce((a,p)=>a.map((v,i)=>v+p[i]),[0,0,0]).map(v=>v/points.length),normal=[0,0,0];
+ for(let i=0;i<points.length;i++){const a=points[i],b=points[(i+1)%points.length];normal[0]+=(a[1]-b[1])*(a[2]+b[2]);normal[1]+=(a[2]-b[2])*(a[0]+b[0]);normal[2]+=(a[0]-b[0])*(a[1]+b[1])}
+ const length=Math.hypot(...normal);if(length<1e-12)return {area:0,maximumPlaneDeviation:0};
+ const maximumPlaneDeviation=Math.max(...points.map(p=>Math.abs(p.reduce((sum,v,i)=>sum+(v-center[i])*normal[i]/length,0))));
+ return {area:length/2,maximumPlaneDeviation};
+}

@@ -71,8 +71,9 @@ class ScanMesh:
         destination[:] = vertices
         accessor['min'] = destination.min(axis=0).tolist()
         accessor['max'] = destination.max(axis=0).tolist()
-        self.primitive['attributes'].pop('NORMAL',None)
-        self.doc.setdefault('extras',{})['floorCopy'] = {'modifiedGeometry':True,'accuracyVerified':False}
+        modified=not np.array_equal(destination,self.vertices.astype('<f4'))
+        if modified:self.primitive['attributes'].pop('NORMAL',None)
+        self.doc.setdefault('extras',{})['floorCopy'] = {'modifiedGeometry':modified,'accuracyVerified':False}
         doc = json.dumps(self.doc,separators=(',',':')).encode()
         doc += b' ' * (-len(doc)%4)
         binary = bytes(self.binary)
