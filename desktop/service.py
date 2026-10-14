@@ -11,6 +11,7 @@ from project_store import ProjectStore,atomic_json
 from import_model import import_glb
 from las_processing import import_las
 from planar import analyze
+from forced_planes import analyze_forced
 from plan_analysis import analyze_plan
 from reconstruct import process
 from mpunav import catalog,fetch_map
@@ -32,7 +33,7 @@ def progress(identifier,percent,message):
         save_job(identifier)
 
 
-def compute(identifier):
+def compute(identifier,force_planes=False):
     folder=DATA/identifier
     try:
         with COMPUTE:
@@ -49,14 +50,18 @@ def compute(identifier):
                 progress(identifier,55,'GPU: поиск плоскостей и безопасное выравнивание')
                 analysis=analyze(folder/'mesh.glb',folder)
                 report.update(straightened=True,processingVersion=2,planarAnalysis={k:v for k,v in analysis.items() if k!='planes'})
-            report['availableFiles']=[p.name for p in folder.iterdir() if p.name in {'mesh.glb','mesh.ply','points.glb','points.ply','straightened.glb','planes.json','las.json'}]
+            if force_planes and report['mesh']:
+                progress(identifier,85,'Принудительно выравниваю архитектурные плоскости')
+                forced=analyze_forced(folder/'mesh.glb',folder)
+                report.update(forced=True,forcedAnalysis={k:v for k,v in forced.items() if k!='planes'})
+            report['availableFiles']=[p.name for p in folder.iterdir() if p.name in {'mesh.glb','mesh.ply','points.glb','points.ply','straightened.glb','planes.json','las.json','forced.glb','forced-planes.json'} and (force_planes or not p.name.startswith('forced'))]
             report['legacyResult']=(folder/'previous-v1.glb').exists()
             if (folder/'plan-comparison.png').exists():report['planComparison']='plan-comparison.png'
             with STORE.lock:
                 p=STORE.get(JOBS[identifier]['project']);c=p.get('calibration');base=p.get('baseline',{})
                 if c and c['scan']==identifier:
                     for name in c.get('exports',[]):
-                        source={'calibrated.glb':'mesh.glb','calibrated-v2.glb':'straightened.glb','calibrated-points.glb':'points.glb'}.get(name)
+                        source={'calibrated.glb':'mesh.glb','calibrated-v2.glb':'straightened.glb','calibrated-forced.glb':'forced.glb','calibrated-points.glb':'points.glb'}.get(name)
                         if source and (folder/source).exists():scale_glb(folder/source,folder/name,c['factor'])
                 if base.get('exports',{}).get('scan')==identifier:
                     for name in base['exports']['files']:
@@ -66,7 +71,7 @@ def compute(identifier):
                 STORE.save(p)
             atomic_json(folder/'report.json',report)
         with LOCK:
-            JOBS[identifier].update(state='done',progress=100,message='Обработка v2 завершена',report=report)
+            JOBS[identifier].update(state='done',progress=100,message='Обработка с принудительным выравниванием завершена' if force_planes else 'Обработка v2 завершена',report=report)
             save_job(identifier)
     except Exception as error:
         with LOCK:
@@ -178,7 +183,7 @@ class Handler(BaseHTTPRequestHandler):
                 elif mode=='set':
                     p['calibration']={'scan':scan,'factor':item['factor'],'reference':item,'checks':[],'accuracyVerified':False}
                     files=[]
-                    for source,name in [('mesh.glb','calibrated.glb'),('straightened.glb','calibrated-v2.glb'),('points.glb','calibrated-points.glb')]:
+                    for source,name in [('mesh.glb','calibrated.glb'),('straightened.glb','calibrated-v2.glb'),('forced.glb','calibrated-forced.glb'),('points.glb','calibrated-points.glb')]:
                         if (DATA/scan/source).exists():scale_glb(DATA/scan/source,DATA/scan/name,item['factor']);files.append(name)
                     p['calibration']['exports']=files
                 else:raise ValueError('Некорректный режим калибровки')
@@ -241,12 +246,13 @@ class Handler(BaseHTTPRequestHandler):
                     save_job(identifier)
                 return self.reply({'id':identifier},201)
             if path in {'/api/process','/api/regularize'}:
-                identifier=self.read_json()['id']
+                data=self.read_json();identifier=data['id'];force_planes=data.get('forcePlanes',False)
+                if not isinstance(force_planes,bool):raise ValueError('forcePlanes должен быть галочкой true/false')
                 with LOCK:
                     if identifier not in JOBS:raise ValueError('Скан не найден')
                     if any(j['state']=='running' for j in JOBS.values()):raise ValueError('Дождись завершения текущей обработки')
-                    JOBS[identifier].update(state='running',progress=1,message='Подготавливаю данные');save_job(identifier)
-                threading.Thread(target=compute,args=(identifier,),daemon=True).start();return self.reply({'id':identifier},202)
+                    JOBS[identifier].update(state='running',progress=1,message='Подготавливаю данные',forcePlanes=force_planes);save_job(identifier)
+                threading.Thread(target=compute,args=(identifier,force_planes),daemon=True).start();return self.reply({'id':identifier},202)
             if path=='/api/plan':
                 project_id=self.headers.get('X-Project-ID');p=STORE.get(project_id)
                 if p.get('plan',{} ) and p['plan'].get('state')=='running':raise ValueError('Дождись завершения анализа текущей планировки')

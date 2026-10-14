@@ -31,7 +31,7 @@ const flight=freeCamera(THREE,camera,controls,renderer.domElement,(active,positi
 let frameTime=performance.now();
 renderer.setAnimationLoop(time=>{
  const dt=(time-frameTime)/1000;frameTime=time;if(flight.active)flight.update(dt);else controls.update();const w=$('viewport').clientWidth,h=$('viewport').clientHeight;
- if(mode==='compare'&&before&&after){
+ if(['compare','compareForced'].includes(mode)&&before&&after){
   const split=Math.round(w*Number($('compareSlider').value)/100);renderer.setScissorTest(true);
   before.visible=true;after.visible=false;renderer.setScissor(0,0,split,h);renderer.render(scene,camera);
   before.visible=false;after.visible=true;renderer.setScissor(split,0,w-split,h);renderer.render(scene,camera);renderer.setScissorTest(false);
@@ -74,20 +74,21 @@ async function show(nextMode='mesh',reset=false){
  const ticket=++request;error('');$('empty').hidden=true;$('variant').textContent='Загружается модель…';$('variant').dataset.ready='loading';
  try{
   let target,original,processed;
+  if(['forced','compareForced'].includes(nextMode)&&!current.report.forced)throw new Error('Включи галочку принудительного выравнивания и нажми «Обработать»');
   if(['corrected','compare','difference'].includes(nextMode)&&(!current.report.straightened||current.report.processingVersion!==2))throw new Error('Сначала выполни обработку v2');
   if(nextMode==='points'&&!current.report.pointCloud)throw new Error('Облако LAS ещё не обработано');
   if(nextMode==='old'&&!current.report.legacyResult)throw new Error('Архивная обработка v1 отсутствует');
-  if(nextMode==='compare'){original=await getModel('mesh.glb');processed=await getModel('straightened.glb');target=original}
+  if(['compare','compareForced'].includes(nextMode)){original=await getModel('mesh.glb');processed=await getModel(nextMode==='compareForced'?'forced.glb':'straightened.glb');target=original}
   else if(nextMode==='difference')target=await differenceModel();
-  else target=await getModel(nextMode==='corrected'?'straightened.glb':nextMode==='points'||!current.report.mesh?'points.glb':nextMode==='old'?'previous-v1.glb':'mesh.glb');
+  else target=await getModel(nextMode==='forced'?'forced.glb':nextMode==='corrected'?'straightened.glb':nextMode==='points'||!current.report.mesh?'points.glb':nextMode==='old'?'previous-v1.glb':'mesh.glb');
   if(ticket!==request)return;
   for(const root of cache.values())root.visible=false;
   model=target;model.visible=true;before=original;after=processed;mode=nextMode;
   $('viewMode').value=mode;$('mapStage').hidden=true;$('floorplanStage').hidden=true;$('empty').hidden=true;
-  for(const id of ['compareLine','compareControl','beforeLabel','afterLabel'])$(id).hidden=mode!=='compare';
+  for(const id of ['compareLine','compareControl','beforeLabel','afterLabel'])$(id).hidden=!['compare','compareForced'].includes(mode);
   $('heatLegend').hidden=mode!=='difference';
-  $('variant').textContent={mesh:'Исходная модель',corrected:'Обработка v2 · ограниченные правки',compare:'Один ракурс · два результата',difference:'Сдвиг вершин относительно исходного GLB',points:'Облако точек LAS',old:'Архив v1 · содержит дефекты'}[mode];
-  $('variant').dataset.ready=mode;
+  $('variant').textContent={forced:'Проекция архитектуры на плоскости · размеры требуют проверки',compareForced:'Исходный / принудительно выровненный',mesh:'Исходная модель',corrected:'Обработка v2 · ограниченные правки',compare:'Один ракурс · два результата',difference:'Сдвиг вершин относительно исходного GLB',points:'Облако точек LAS',old:'Архив v1 · содержит дефекты'}[mode];
+  $('variant').dataset.ready=mode;$('afterLabel').textContent=mode==='compareForced'?'Выравнивание плоскостей':'Обработка v2';
   if(reset)fit();applyAppearance();wire();applyCut();applyWalls();renderWallControls();updateInspector();$('hideWalls').disabled=mode==='points'||mode==='plan';
  }catch(e){if(ticket!==request)return;error(e.message);$('viewMode').value=mode;$('variant').textContent='Ошибка загрузки: '+e.message;$('variant').dataset.ready='error'}
 }
@@ -98,15 +99,16 @@ function wire(){for(const root of cache.values())root.traverse(o=>{if(o.isMesh)f
 function updateInspector(){
  const r=current?.report||{},c=r.planarAnalysis?.changes;$('fit').disabled=$('top').disabled=!model;
  $('modelStats').textContent=mode==='plan'?'Черновая модель плана · условный масштаб':current?`${current.name} · метры`: 'Метры · Y вверх';
+ const fc=r.forcedAnalysis?.changes;$('forcedChanges').textContent=fc?`${fc.processedPlanes} плоскостей · ${fc.movedVertices.toLocaleString('ru')} вершин\nМаксимальный сдвиг: ${fc.maximumShiftMm.toFixed(1)} мм\nИзменение габаритов X/Y/Z: ${fc.extentChangeMm.map(v=>v.toFixed(1)).join(' / ')} мм\nОтброшено при риске переворота: ${fc.rejectedFoldFaces} граней\nРеальная точность не подтверждена`:'Отдельная модель ещё не создана. Нажми «Применить принудительное выравнивание».';
  $('changes').textContent=c?`${c.movedVertices.toLocaleString('ru')} вершин изменены\nМаксимальный сдвиг: ${c.maximumShiftMm.toFixed(2)} мм\nПредельный наклон: ${(c.maximumNormalChangeDegrees||0).toFixed(2)}°\nСогласованных швов: ${c.weldedSeamGroups||0}\nGPU: ${r.planarAnalysis.backend||'CPU'}`:'Обработка v2 ещё не выполнена';
  const align=r.las?.alignment;$('alignment').textContent=align?`Медиана расстояния облака до вершин сетки: ${align.medianDistanceMm.toFixed(1)} мм. Это согласование двух экспортов, а не точность относительно реального объекта.`:r.pointCloud?(r.las?'LAS без пары GLB: локальные координаты, Y вверх.':'Облако точек импортировано из GLB.'):'Данные совмещения отсутствуют';
  $('exports').replaceChildren();
  for(const name of (r.availableFiles||[]).filter(n=>n.endsWith('.glb')||n.endsWith('.ply'))){const a=document.createElement('a');a.textContent=name.replace('.glb','').replace('.ply',' PLY');a.href=`/data/${current.id}/${name}`;a.download=name;$('exports').append(a)}
  $('plan').hidden=!r.planComparison;if(r.planComparison)$('plan').href=`/data/${current.id}/${r.planComparison}`;
- const available={mesh:!!r.mesh,points:!!r.pointCloud,corrected:!!r.straightened&&r.processingVersion===2,compare:!!r.straightened&&r.processingVersion===2,difference:!!r.straightened&&r.processingVersion===2,old:!!r.legacyResult,map:!!project?.mpunav,floorplan:!!project?.floorplan&&project.floorplan.scan===current?.id&&!project.floorplan.stale&&Math.abs(project.floorplan.factor-metricFactor())<1e-8};for(const option of $('viewMode').options)option.disabled=!available[option.value];
- $('process').disabled=busyUpload||!current||jobs.some(j=>j.state==='running');$('processCompact').disabled=$('process').disabled;
+ const available={forced:!!r.forced,compareForced:!!r.forced,mesh:!!r.mesh,points:!!r.pointCloud,corrected:!!r.straightened&&r.processingVersion===2,compare:!!r.straightened&&r.processingVersion===2,difference:!!r.straightened&&r.processingVersion===2,old:!!r.legacyResult,map:!!project?.mpunav,floorplan:!!project?.floorplan&&project.floorplan.scan===current?.id&&!project.floorplan.stale&&Math.abs(project.floorplan.factor-metricFactor())<1e-8};for(const option of $('viewMode').options)option.disabled=!available[option.value];
+ $('process').disabled=busyUpload||!current||jobs.some(j=>j.state==='running');$('processCompact').disabled=$('process').disabled;$('forceApply').disabled=$('process').disabled;$('forcePlanes').disabled=busyUpload||jobs.some(j=>j.state==='running');
 }
-async function selectJob(job){const same=current?.id===job.id;if(!same){++request;clearSceneModels();clearMeasurement();$('measurementName').value='';$('calibrationReal').value='';$('calibrationName').value='';try{hiddenWallIds=new Set(JSON.parse(localStorage.getItem('3d-hidden-walls-'+job.id)||'[]'))}catch{hiddenWallIds=new Set()}}current=job;renderJobs();updateInspector();renderFloorplan();renderCalibration();await show(job.report.mesh?'mesh':job.report.pointCloud?'points':'mesh',!same)}
+async function selectJob(job){const same=current?.id===job.id;if(!same){++request;clearSceneModels();clearMeasurement();$('measurementName').value='';$('calibrationReal').value='';$('calibrationName').value='';try{hiddenWallIds=new Set(JSON.parse(localStorage.getItem('3d-hidden-walls-'+job.id)||'[]'))}catch{hiddenWallIds=new Set()}}current=job;$('forcePlanes').checked=!!job.forcePlanes;renderJobs();updateInspector();renderFloorplan();renderCalibration();await show(job.report.mesh?'mesh':job.report.pointCloud?'points':'mesh',!same)}
 function renderJobs(){
  $('scanSelect').replaceChildren();for(const j of jobs){const option=document.createElement('option');option.value=j.id;option.textContent=j.name;$('scanSelect').append(option)}if(current)$('scanSelect').value=current.id;
  $('jobs').replaceChildren();for(const j of jobs){const button=document.createElement('button');button.className='job'+(j.id===current?.id?' selected':'');const name=document.createElement('strong');name.textContent=j.name;const info=document.createElement('small');info.textContent=(j.files||[]).map(e=>e.slice(1).toUpperCase()).join(' + ')+' · '+({ready:'к обработке',running:'обработка',done:'готово',error:'ошибка'}[j.state]||j.state);button.append(name,info);button.onclick=()=>selectJob(j);$('jobs').append(button)}
@@ -129,8 +131,8 @@ $('file').onchange=async e=>{
  busyUpload=true;let id;error('');for(const key of ['projectSelect','newProject','importCompact','importFileButton'])$(key).disabled=true;updateInspector();
  try{for(const file of files){$('status').textContent='Импортирую '+file.name;$('sceneStatus').textContent=$('status').textContent;$('sceneStatus').hidden=false;const headers={'X-Project-ID':project.id,'X-File-Name':encodeURIComponent(file.name)};if(id)headers['X-Scan-ID']=id;const r=await api('/api/upload',{method:'POST',headers,body:file});id=r.id}await refresh();const job=jobs.find(j=>j.id===id);if(job)await selectJob(job)}catch(e){error(e.message)}finally{busyUpload=false;for(const key of ['projectSelect','newProject','importCompact','importFileButton'])$(key).disabled=false;$('file').value='';updateInspector()}
 };
-async function runProcessing(){if(!current)return error('Выбери скан');try{await post('/api/process',{id:current.id});await refresh()}catch(e){error(e.message)}}
-$('process').onclick=runProcessing;$('processCompact').onclick=runProcessing;
+async function runProcessing(){if(!current)return error('Выбери скан');try{await post('/api/process',{id:current.id,forcePlanes:$('forcePlanes').checked});await refresh()}catch(e){error(e.message)}}
+$('forceApply').onclick=()=>{$('forcePlanes').checked=true;runProcessing()};$('process').onclick=runProcessing;$('processCompact').onclick=runProcessing;
 $('viewMode').onchange=()=>{clearMeasurement();if($('viewMode').value==='floorplan')openFloorplan();else if($('viewMode').value==='map')$('mapOpen').click();else show($('viewMode').value)};$('fit').onclick=()=>fit();$('top').onclick=()=>fit(true);$('wire').onchange=wire;
 const focusButton=document.createElement('button');focusButton.textContent='Развернуть вид';focusButton.id='focusView';focusButton.onclick=()=>{document.body.classList.toggle('sceneFocus');focusButton.textContent=document.body.classList.contains('sceneFocus')?'Вернуть панели':'Развернуть вид'};document.querySelector('.toolbar').append(focusButton);
 function applyCut(){if(model){const box=new THREE.Box3().setFromObject(model),height=box.max.y-box.min.y;cutLevel=height>1.8?box.min.y+height*.92:box.max.y+1}let planes=current?.wallPlanes||[];if(!planes.length&&model)model.traverse(o=>{if(o.userData.wallPlanes?.length)planes=o.userData.wallPlanes});const horizontal=planes.filter(p=>p.kind==='horizontal'),largest=Math.max(0,...horizontal.map(p=>p.areaM2)),heights=horizontal.filter(p=>p.areaM2>=largest*.15).map(p=>-p.constant/p.normal[1]);if(heights.length>1){const floor=Math.min(...heights),ceiling=heights.filter(y=>y-floor>1.8);if(ceiling.length)cutLevel=Math.min(...ceiling)-.05}renderer.clippingPlanes=$('cut').checked?[new THREE.Plane(new THREE.Vector3(0,-1,0),cutLevel)]:[]}
@@ -235,7 +237,7 @@ async function refresh(){
   const running=jobs.find(j=>j.state==='running');$('progress').hidden=!running;$('progress').value=running?.progress||0;
   if(!busyUpload)$('status').textContent=running?.message||current?.message||'Выбери скан или импортируй файлы';
   $('sceneStatus').hidden=!running&&(!current||current.state==='done');$('sceneStatus').textContent=running?`${running.message} · ${running.progress}%`:current?.message||'';
-  if(current){const updated=jobs.find(j=>j.id===current.id);if(updated){current=updated;updateInspector();if(old.state==='running'&&updated.state==='done'){for(const [key,root]of [...cache]){if(key.includes('straightened')||key.includes('points')||key.endsWith('/difference')){scene.remove(root);dispose(root);cache.delete(key)}}await loadProjects();await show(updated.report.mesh?'compare':'points')}}}
+  if(current){const updated=jobs.find(j=>j.id===current.id);if(updated){current=updated;updateInspector();if(old.state==='running'&&updated.state==='done'){for(const [key,root]of [...cache]){if(key.includes('forced')||key.includes('straightened')||key.includes('points')||key.endsWith('/difference')){scene.remove(root);dispose(root);cache.delete(key)}}await loadProjects();await show(updated.report.mesh?(updated.report.forced?'compareForced':'compare'):'points')}}}
   else if(jobs.length){const preferred=jobs.findLast(j=>(j.report?.points||0)>1000)||jobs.at(-1);await selectJob(preferred)}
   if(project.plan?.state==='running')await loadProjects();
  }catch(e){error(e.message)}
