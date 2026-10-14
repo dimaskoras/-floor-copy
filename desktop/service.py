@@ -41,8 +41,9 @@ def compute(identifier):
                 report['pointCloud']=(folder/'points.glb').exists()
             else:
                 report=import_glb(folder/'source.glb',folder) if (folder/'source.glb').exists() else {'mesh':False,'importedModel':True,'frames':None,'accuracyVerified':False}
-                if (folder/'source.las').exists():
-                    las=import_las(folder/'source.las',folder,folder/'mesh.glb' if report['mesh'] else None,lambda p,m:progress(identifier,p,m))
+                if (folder/'source.las').exists() or (folder/'source.laz').exists():
+                    cloud_source=folder/'source.laz' if (folder/'source.laz').exists() else folder/'source.las'
+                    las=import_las(cloud_source,folder,folder/'mesh.glb' if report['mesh'] else None,lambda p,m:progress(identifier,p,m))
                     report.update(pointCloud=True,las=las,points=las['outputPoints'])
             if report['mesh']:
                 progress(identifier,55,'GPU: поиск плоскостей и безопасное выравнивание')
@@ -212,7 +213,7 @@ class Handler(BaseHTTPRequestHandler):
             if path=='/api/upload':
                 project_id=self.headers.get('X-Project-ID');STORE.get(project_id)
                 name=unquote(self.headers.get('X-File-Name',''));extension=Path(name).suffix.lower()
-                if extension not in {'.glb','.las','.zip'}:raise ValueError('Поддерживаются GLB, LAS и ZIP Floor Copy')
+                if extension not in {'.glb','.las','.laz','.zip'}:raise ValueError('Поддерживаются GLB, LAS, LAZ и ZIP Floor Copy')
                 identifier=self.headers.get('X-Scan-ID')
                 if identifier:
                     with LOCK:
@@ -224,8 +225,9 @@ class Handler(BaseHTTPRequestHandler):
                     STORE.attach(project_id,identifier)
                 folder=DATA/identifier
                 with LOCK:
-                    if extension=='.zip' and any(e in JOBS[identifier]['files'] for e in ['.glb','.las']):raise ValueError('ZIP нельзя смешивать с GLB/LAS')
-                    if extension in ['.glb','.las'] and '.zip' in JOBS[identifier]['files']:raise ValueError('ZIP нельзя смешивать с GLB/LAS')
+                    if extension=='.zip' and any(e in JOBS[identifier]['files'] for e in ['.glb','.las','.laz']):raise ValueError('ZIP нельзя смешивать с GLB/LAS')
+                    if extension in ['.glb','.las','.laz'] and '.zip' in JOBS[identifier]['files']:raise ValueError('ZIP нельзя смешивать с GLB/LAS')
+                if extension in {'.las','.laz'} and any(e in JOBS[identifier]['files'] for e in ({'.las','.laz'}-{extension})):raise ValueError('Выбери LAS или LAZ, а не оба сразу')
                 self.upload(folder/('source'+extension))
                 with LOCK:
                     job=JOBS[identifier]

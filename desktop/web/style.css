@@ -24,3 +24,7 @@ button.upload{display:flex;align-items:center;justify-content:center;gap:12px;wi
 #wallSettings{border-bottom:1px solid #363d4b;padding:10px 0;margin-bottom:8px}#wallSettings summary{cursor:pointer;color:var(--c-link)}#wallChoices label{display:flex;gap:8px;align-items:center;margin:7px 0;color:var(--c-5)}#wallChoices input{width:auto}
 
 #floorplanPaper{flex:1;min-height:0;overflow:auto;background:#fff;border-radius:8px}#floorplanDrawing{height:100%;width:100%;object-fit:contain;transform-origin:top left}#floorplanZoom{width:100px}
+
+#planExports a{display:block;padding:8px;margin:5px 0;font-size:12px}
+
+#flightHelp{padding:8px 14px;background:#20353a;color:#b8eee9;font-size:12px}#flightHelp[hidden]{display:none}#viewport canvas:focus{outline:2px solid #65d9ce;outline-offset:-2px}

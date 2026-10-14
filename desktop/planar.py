@@ -1,4 +1,4 @@
-"""Conservative planar regularization of a single Scaniverse mesh.
+"""Conservative planar regularization of textured GLB mesh parts.
 
 Does not infer missing walls, enforce right angles, or certify dimensions.
 Texture coordinates, topology, and the original embedded image are preserved.
@@ -27,8 +27,6 @@ class ScanMesh:
         if binary_kind != 0x004e4942:
             raise ValueError('Нужна встроенная геометрия GLB')
         self.binary = bytearray(raw[cursor+8:cursor+8+binary_size])
-        if len(self.doc.get('meshes', [])) != 1 or len(self.doc['meshes'][0]['primitives']) != 1:
-            raise ValueError('Пока поддерживается одна сетка в GLB')
         for node in self.doc.get('nodes', []):
             identity = (np.allclose(node.get('translation', [0,0,0]), [0,0,0])
                         and np.allclose(node.get('rotation', [0,0,0,1]), [0,0,0,1])
@@ -36,12 +34,22 @@ class ScanMesh:
                         and np.allclose(node.get('matrix', np.eye(4).ravel().tolist()), np.eye(4).ravel()))
             if not identity:
                 raise ValueError('GLB с преобразованиями узлов пока нельзя выравнивать')
-        self.primitive = self.doc['meshes'][0]['primitives'][0]
-        if self.primitive.get('mode',4) != 4:
-            raise ValueError('Нужна треугольная сетка, а не splat')
-        self.position_id = self.primitive['attributes']['POSITION']
-        self.vertices = self.array(self.position_id).astype(np.float64)
-        self.faces = self.array(self.primitive['indices']).reshape(-1,3).astype(np.int64)
+        self.primitives=[p for m in self.doc.get('meshes',[]) for p in m['primitives']]
+        if not self.primitives or any(p.get('mode',4)!=4 for p in self.primitives):raise ValueError('Нужна треугольная сетка, а не splat')
+        self.primitive=self.primitives[0];self.position_id=self.primitive['attributes']['POSITION']
+        blocks={};self.parts=[];vertices=[];faces=[];offset=0
+        for primitive in self.primitives:
+            position_id=primitive['attributes']['POSITION']
+            if position_id not in blocks:
+                block=self.array(position_id).astype(np.float64)
+                if block.shape[1]!=3 or not len(block):raise ValueError('Некорректные координаты сетки')
+                blocks[position_id]=(offset,len(block));vertices.append(block)
+                self.parts.append((position_id,offset,len(block)));offset+=len(block)
+            start,count=blocks[position_id]
+            indices=self.array(primitive['indices']).reshape(-1,3).astype(np.int64) if 'indices' in primitive else np.arange(count).reshape(-1,3)
+            if len(indices) and (indices.min()<0 or indices.max()>=count):raise ValueError('Некорректные индексы части сетки')
+            faces.append(indices+start)
+        self.vertices=np.vstack(vertices);self.faces=np.vstack(faces)
         if len(self.faces) and (self.faces.min() < 0 or self.faces.max() >= len(self.vertices)):
             raise ValueError('Некорректные индексы треугольников')
         if not np.isfinite(self.vertices).all():
@@ -61,18 +69,20 @@ class ScanMesh:
                           offset=offset,strides=(stride,item)).copy()
 
     def save(self, path, vertices):
-        accessor = self.doc['accessors'][self.position_id]
-        view = self.doc['bufferViews'][accessor['bufferView']]
-        if accessor['componentType'] != 5126:
-            raise ValueError('Нужны float32-координаты')
-        offset = view.get('byteOffset',0)+accessor.get('byteOffset',0)
-        stride = view.get('byteStride',12)
-        destination = np.ndarray((len(vertices),3),dtype='<f4',buffer=self.binary,offset=offset,strides=(stride,4))
-        destination[:] = vertices
-        accessor['min'] = destination.min(axis=0).tolist()
-        accessor['max'] = destination.max(axis=0).tolist()
-        modified=not np.array_equal(destination,self.vertices.astype('<f4'))
-        if modified:self.primitive['attributes'].pop('NORMAL',None)
+        vertices=np.asarray(vertices)
+        if vertices.shape!=self.vertices.shape or not np.isfinite(vertices).all():raise ValueError('Некорректные вершины результата')
+        modified=False
+        for position_id,start,count in self.parts:
+            accessor=self.doc['accessors'][position_id];view=self.doc['bufferViews'][accessor['bufferView']]
+            if accessor['componentType']!=5126:raise ValueError('Нужны float32-координаты')
+            offset=view.get('byteOffset',0)+accessor.get('byteOffset',0);stride=view.get('byteStride',12)
+            destination=np.ndarray((count,3),dtype='<f4',buffer=self.binary,offset=offset,strides=(stride,4))
+            destination[:]=vertices[start:start+count]
+            accessor['min']=destination.min(axis=0).tolist();accessor['max']=destination.max(axis=0).tolist()
+            changed=not np.array_equal(destination,self.vertices[start:start+count].astype('<f4'));modified|=changed
+            if changed:
+                for primitive in self.primitives:
+                    if primitive['attributes']['POSITION']==position_id:primitive['attributes'].pop('NORMAL',None)
         self.doc.setdefault('extras',{})['floorCopy'] = {'modifiedGeometry':modified,'accuracyVerified':False}
         doc = json.dumps(self.doc,separators=(',',':')).encode()
         doc += b' ' * (-len(doc)%4)
