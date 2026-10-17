@@ -56,11 +56,12 @@ def build(source,folder,factor=1,section_meters=1.1,title='План по ска�
     factor=float(factor);section_meters=float(section_meters);scale=int(scale)
     if not math.isfinite(factor) or not .1<factor<10 or not .1<=section_meters<=3 or scale not in (20,50,100,200):raise ValueError('Проверь масштаб, высоту сечения и масштаб листа')
     folder=Path(folder);mesh=ScanMesh(source)
-    plane_file=Path(source).parent/'planes.json'
-    planes=json.loads(plane_file.read_text(encoding='utf-8'))['planes'] if plane_file.exists() else discover_planes(mesh.vertices,mesh.faces)[0]
+    plane_file=Path(source).parent/('architectural.json' if Path(source).name=='architectural.glb' else 'planes.json')
+    plane_document=json.loads(plane_file.read_text(encoding='utf-8')) if plane_file.exists() else {'planes':discover_planes(mesh.vertices,mesh.faces)[0]}
+    planes=plane_document['planes'];is_model=Path(source).name=='architectural.glb'
     horizontal=[p for p in planes if p['kind']=='horizontal' and p['areaM2']>1]
     floor=min(horizontal,key=lambda p:sum(v[1] for v in p['bounds'])/2) if horizontal else None
-    floor_y=-floor['constant']/floor['normal'][1] if floor else float(np.quantile(mesh.vertices[:,1],.02))
+    floor_y=plane_document['floorY'] if is_model else -floor['constant']/floor['normal'][1] if floor else float(np.quantile(mesh.vertices[:,1],.02))
     height=floor_y+section_meters/factor
     walls=section(mesh.vertices,mesh.faces,planes,height)
     if not walls:raise ValueError('На выбранной высоте не найдено стен. Измени высоту сечения или досними стены.')
@@ -74,7 +75,8 @@ def build(source,folder,factor=1,section_meters=1.1,title='План по ска�
     widths.sort(key=lambda w:-w['supportLength'])
     report={'scanSource':Path(source).name,'method':'architectural plane sections; observed coverage only',
             'factor':factor,'sectionMeters':section_meters,'sheetScale':scale,'walls':walls,'parallelDistances':widths,
-            'observedFloorAreaM2':floor['areaM2']*factor**2 if floor else None,
+            'observedFloorAreaM2':plane_document.get('floorAreaEstimatedM2') if is_model else floor['areaM2']*factor**2 if floor else None,
+            'areaSource':'geometric_model' if is_model else 'observed',
             'accuracyVerified':False,'gostCompliant':False,'title':str(title)[:100],
             'warnings':['Чертёж наблюдаемого участка; концы скана не замыкаются в комнату.',
                         'Разрывы могут быть проёмами, мебелью или пропусками съёмки. Тип и высота не определены.',
@@ -113,8 +115,10 @@ def build(source,folder,factor=1,section_meters=1.1,title='План по ска�
     for width in widths[:1]:
         a,b=[next(w for w in walls if w['id']==i) for i in width['walls']]
         mid=(a['spans'][0][0]+a['spans'][-1][1])/2;p=wall_point(a,mid);n=np.array(b['normal']);q=p-n*(n@p+b['constant']);dim(p,q,f'{width["meters"]:.3f} м',0)
-    area=report['observedFloorAreaM2'];area_label=f'Наблюдаемая площадь пола: {area:.2f} м²' if area is not None else 'Площадь пола не определена'
+    if is_model:report['warnings'][0]='Сечение геометрической модели. Скрытые поверхности продолжены по плоскостям; контрольные размеры заданы как ограничения.'
+    area=report['observedFloorAreaM2'];area_label=f'Площадь пола модели: {area:.2f} м²' if is_model and area is not None else f'Наблюдаемая площадь пола: {area:.2f} м²' if area is not None else 'Площадь пола не определена'
     svg=f'<svg xmlns="http://www.w3.org/2000/svg" width="420mm" height="297mm" viewBox="0 0 420 297"><rect width="420" height="297" fill="white"/><g font-family="Arial" fill="#1a2630"><rect x="20" y="5" width="395" height="287" fill="none" stroke="#333" stroke-width=".35"/><text x="30" y="17" font-size="5">{html.escape(report["title"])}</text><text x="30" y="25" font-size="3.5">Сечение {section_meters:.2f} м · 1:{scale} · коэффициент {factor:.6f}</text>{"".join(drawing)}<text x="30" y="258" font-size="3.5">{area_label}</text><text x="30" y="267" font-size="3" fill="#994b13">ЧЕРНОВИК ОБМЕРА. Точность не подтверждена. Разрывы (?) проверить на месте.</text><text x="30" y="275" font-size="3">Печать SVG: A3, 100%, без подгонки. Размерные числа — в метрах.</text><text x="30" y="284" font-size="3">Не является проверенным рабочим чертежом СПДС. Невидимые стены и двери не достроены.</text></g></svg>'
+    if is_model:svg=svg.replace('Не является проверенным рабочим чертежом СПДС. Невидимые стены и двери не достроены.','Эскиз по геометрической модели. Высоты и проёмы требуют контрольных обмеров.')
     (folder/'floorplan.svg').write_text(svg,encoding='utf-8')
     dxf.extend(['0','ENDSEC','0','EOF']);(folder/'floorplan.dxf').write_text('\n'.join(dxf)+'\n',encoding='ascii')
     with (folder/'floorplan.csv').open('w',encoding='utf-8-sig',newline='') as f:

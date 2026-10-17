@@ -12,6 +12,7 @@ from import_model import import_glb
 from las_processing import import_las
 from planar import analyze
 from forced_planes import analyze_forced
+from architecture import build as build_architecture
 from plan_analysis import analyze_plan
 from reconstruct import process
 from mpunav import catalog,fetch_map
@@ -55,6 +56,12 @@ def compute(identifier,force_planes=False):
                 forced=analyze_forced(folder/'mesh.glb',folder)
                 report.update(forced=True,forcedAnalysis={k:v for k,v in forced.items() if k!='planes'})
             report['availableFiles']=[p.name for p in folder.iterdir() if p.name in {'mesh.glb','mesh.ply','points.glb','points.ply','straightened.glb','planes.json','las.json','forced.glb','forced-planes.json'} and (force_planes or not p.name.startswith('forced'))]
+            if (folder/'architectural.json').exists() and (folder/'architectural.glb').exists():
+                import hashlib
+                arch=json.loads((folder/'architectural.json').read_text(encoding='utf-8'))
+                if arch.get('sourceHash')==hashlib.sha256((folder/'mesh.glb').read_bytes()).hexdigest():
+                    report.update(architecture=True,architecturalAnalysis={k:v for k,v in arch.items() if k not in {'planes','bands'}})
+                    report['availableFiles']+=['architectural.glb','architectural.json','architectural-plan.svg','architectural.dxf','architectural-dimensions.csv']
             report['legacyResult']=(folder/'previous-v1.glb').exists()
             if (folder/'plan-comparison.png').exists():report['planComparison']='plan-comparison.png'
             with STORE.lock:
@@ -120,14 +127,14 @@ class Handler(BaseHTTPRequestHandler):
                 active_scans={s for p in STORE.all() for s in p['scans']}
                 with LOCK:jobs=[dict(id=k,**v) for k,v in JOBS.items() if k in (active_scans if project is None else project['scans'])]
                 return self.reply(jobs)
-            if path=='/api/health':return self.reply({'status':'ok','root':str(ROOT.parent),'version':'0.4'})
+            if path=='/api/health':return self.reply({'status':'ok','root':str(ROOT.parent),'version':'0.5'})
             base=DATA if path.startswith('/data/') else ROOT/'web'
             target=(base/(path[6:] if path.startswith('/data/') else 'index.html' if path=='/' else path.lstrip('/'))).resolve()
             if not target.is_relative_to(base.resolve()) or not target.is_file() or target.suffix.lower() not in {'.html','.js','.css','.json','.glb','.ply','.png','.jpg','.jpeg','.svg','.pdf','.woff2','.dxf','.csv'}:return self.reply({'error':'Не найдено'},404)
             self.send_response(200);self.send_header('Content-Type',mimetypes.guess_type(target.name)[0] or 'application/octet-stream');self.send_header('Content-Length',str(target.stat().st_size));self.send_header('Cache-Control','no-store');self.end_headers()
             with target.open('rb') as stream:
                 while chunk:=stream.read(1024**2):self.wfile.write(chunk)
-        except (ValueError,KeyError,json.JSONDecodeError) as error:self.reply({'error':str(error)},400)
+        except (ValueError,KeyError,json.JSONDecodeError,FileNotFoundError) as error:self.reply({'error':str(error)},400)
     def do_POST(self):
         if self.headers.get('Origin') not in {None,f'http://127.0.0.1:{self.server.server_port}',f'http://localhost:{self.server.server_port}'}:return self.reply({'error':'Недопустимый источник'},403)
         try:
@@ -137,6 +144,36 @@ class Handler(BaseHTTPRequestHandler):
                 data=self.read_json();p=STORE.get(data['project'])
                 if any(JOBS[s]['state']=='running' for s in p['scans'] if s in JOBS):raise ValueError('Дождись завершения обработки')
                 return self.reply(STORE.archive(p['id'],data.get('archived',True)))
+            if path=='/api/architecture/plan':
+                project_id=self.headers.get('X-Project-ID');p=STORE.get(project_id)
+                ext=Path(unquote(self.headers.get('X-File-Name',''))).suffix.lower()
+                if ext not in {'.dxf','.csv'}:raise ValueError('Нужен DXF планировки или CSV размеров Polycam')
+                if not COMPUTE.acquire(blocking=False):raise ValueError('Дождись завершения обработки')
+                try:
+                    name='polycam-floorplan'+ext;self.upload(STORE.root/project_id/name,maximum=20*1024**2)
+                    p=STORE.get(project_id);files=[f for f in p.get('planExports',[]) if f['file']!=name]
+                    p['planExports']=files+[{'file':name,'label':'Polycam '+ext[1:].upper()}]
+                    if p.get('architecture'):p['architecture']['stale']=True
+                    STORE.save(p);return self.reply({'saved':name})
+                finally:COMPUTE.release()
+            if path=='/api/architecture':
+                data=self.read_json();p=STORE.get(data['project']);scan=data['scan']
+                if scan not in p['scans'] or scan not in JOBS:raise ValueError('Скан не принадлежит проекту')
+                if any(j['state']=='running' for j in JOBS.values()):raise ValueError('Дождись завершения обработки')
+                if not COMPUTE.acquire(blocking=False):raise ValueError('Обработка уже выполняется')
+                try:
+                    folder=DATA/scan;plan=STORE.root/p['id']
+                    result=build_architecture(folder/'mesh.glb',plan/'polycam-floorplan.dxf',plan/'polycam-floorplan.csv',folder,data['lengthMeters'],data['columnGapMeters'],data.get('heightMeters'))
+                    summary={k:v for k,v in result.items() if k not in {'planes','bands'}}
+                    with LOCK:
+                        report=JOBS[scan]['report'];report.update(architecture=True,architecturalAnalysis=summary)
+                        report['availableFiles']=sorted(set(report.get('availableFiles',[])+['architectural.glb','architectural.json','architectural-plan.svg','architectural.dxf','architectural-dimensions.csv']))
+                        JOBS[scan]['message']='Ровная модель аудитории готова';atomic_json(folder/'report.json',report);save_job(scan)
+                    p=STORE.get(data['project']);p['architecture']={'scan':scan,**result['constraints'],'revision':result['revision']}
+                    if p.get('floorplan',{}).get('source')=='architecture':p['floorplan']['stale']=True
+                    STORE.save(p)
+                    return self.reply(summary)
+                finally:COMPUTE.release()
             if path=='/api/measurements':
                 data=self.read_json();p=STORE.get(data['project']);items=data['items']
                 if not isinstance(items,list) or len(items)>1000:raise ValueError('Некорректные измерения')
@@ -164,8 +201,12 @@ class Handler(BaseHTTPRequestHandler):
                 if JOBS[scan]['state']=='running':raise ValueError('Дождись завершения обработки')
                 if not JOBS[scan]['report'].get('mesh'):raise ValueError('Для плана нужна сетка GLB. Облако LAS можно просматривать и измерять отдельно.')
                 c=p.get('calibration');base=p.get('baseline',{});factor=c['factor'] if c and c['scan']==scan else base.get('factor',1) if base.get('enabled') else 1
-                with COMPUTE:result=build_floorplan(DATA/scan/'mesh.glb',DATA/scan,factor,data.get('sectionMeters',1.1),p['name'],data.get('sheetScale',100))
-                result['scan']=scan;p['floorplan']=result;STORE.save(p);return self.reply(result)
+                source_mode=data.get('source','mesh')
+                if source_mode not in {'mesh','architecture'}:raise ValueError('Некорректный источник плана')
+                if source_mode=='architecture' and not JOBS[scan]['report'].get('architecture'):raise ValueError('Сначала построй ровную модель')
+                if source_mode=='architecture':factor=1
+                with COMPUTE:result=build_floorplan(DATA/scan/('architectural.glb' if source_mode=='architecture' else 'mesh.glb'),DATA/scan,factor,data.get('sectionMeters',1.1),p['name'],data.get('sheetScale',100))
+                result['scan']=scan;result['source']=source_mode;p['floorplan']=result;STORE.save(p);return self.reply(result)
             if path=='/api/calibration':
                 data=self.read_json();p=STORE.get(data['project']);scan=data['scan']
                 if scan not in p['scans']:raise ValueError('Скан не принадлежит проекту')
@@ -262,7 +303,7 @@ class Handler(BaseHTTPRequestHandler):
                 p['plan']={'source':name,'state':'running'};STORE.save(p)
                 threading.Thread(target=process_plan,args=(project_id,),daemon=True).start();return self.reply({'accepted':True},202)
             return self.reply({'error':'Не найдено'},404)
-        except (ValueError,KeyError,TypeError,json.JSONDecodeError) as error:return self.reply({'error':str(error)},400)
+        except (ValueError,KeyError,TypeError,FileNotFoundError,json.JSONDecodeError) as error:return self.reply({'error':str(error)},400)
         except Exception as error:return self.reply({'error':str(error)},500)
 
 
@@ -288,7 +329,7 @@ def load():
 
 def main():
     parser=argparse.ArgumentParser();parser.add_argument('--port',type=int,default=4318);args=parser.parse_args()
-    load();print(f'Floor Copy 0.3: http://127.0.0.1:{args.port}',flush=True)
+    load();print(f'Floor Copy 0.5: http://127.0.0.1:{args.port}',flush=True)
     ThreadingHTTPServer(('127.0.0.1',args.port),Handler).serve_forever()
 
 
