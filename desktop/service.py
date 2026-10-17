@@ -169,8 +169,9 @@ class Handler(BaseHTTPRequestHandler):
                         report=JOBS[scan]['report'];report.update(architecture=True,architecturalAnalysis=summary)
                         report['availableFiles']=sorted(set(report.get('availableFiles',[])+['architectural.glb','architectural.json','architectural-plan.svg','architectural.dxf','architectural-dimensions.csv']))
                         JOBS[scan]['message']='Ровная модель аудитории готова';atomic_json(folder/'report.json',report);save_job(scan)
-                    p=STORE.get(data['project']);p['architecture']={'scan':scan,**result['constraints'],'revision':result['revision']}
-                    if p.get('floorplan',{}).get('source')=='architecture':p['floorplan']['stale']=True
+                    p=STORE.get(data['project']);geometry_changed=p.get('architecture',{}).get('revision')!=result['revision']
+                    p['architecture']={'scan':scan,**result['constraints'],'revision':result['revision']}
+                    if geometry_changed and p.get('floorplan',{}).get('source')=='architecture':p['floorplan']['stale']=True
                     STORE.save(p)
                     return self.reply(summary)
                 finally:COMPUTE.release()

@@ -114,8 +114,10 @@ class Surfaces:
         points=np.asarray(points,dtype=float)
         if np.linalg.norm(np.cross(points[1]-points[0],points[2]-points[0]))<1e-10:return
         self.parts[name].append(points)
-    def glb(self,path,scale,extras):
-        blob=bytearray();views=[];accessors=[];meshes=[];nodes=[]
+    def glb(self,path,scale,extras,baker=None):
+        blob=bytearray();views=[];accessors=[];meshes=[];nodes=[];images=[];textures=[]
+        materials=[{'name':'Светлая поверхность','doubleSided':True,'pbrMetallicRoughness':{'baseColorFactor':[.72,.75,.77,1],'metallicFactor':0,'roughnessFactor':1}},
+                   {'name':'Пол','doubleSided':True,'pbrMetallicRoughness':{'baseColorFactor':[.36,.31,.25,1],'metallicFactor':0,'roughnessFactor':1}}]
         def add(a,component,kind,bounds=False):
             blob.extend(b'\0'*(-len(blob)%4));start=len(blob);blob.extend(a.tobytes())
             views.append({'buffer':0,'byteOffset':start,'byteLength':a.nbytes})
@@ -128,10 +130,19 @@ class Surfaces:
                 norm=np.cross(q[1]-q[0],q[2]-q[0]);norm/=np.linalg.norm(norm);n.extend([norm]*4)
                 j=i*4;f.extend([[j,j+1,j+2],[j,j+2,j+3]])
             prim={'attributes':{'POSITION':add(v.astype('<f4'),5126,'VEC3',True),'NORMAL':add(np.array(n,dtype='<f4'),5126,'VEC3')},'indices':add(np.array(f,dtype='<u4').ravel(),5125,'SCALAR'),'mode':4,'material':1 if name=='Пол' else 0}
+            atlas=baker.atlas(quads,[92,79,64] if name=='Пол' else [184,191,196]) if baker else None
+            if atlas:
+                photo,uv=atlas;prim['attributes']['TEXCOORD_0']=add(uv,5126,'VEC2')
+                blob.extend(b'\0'*(-len(blob)%4));start=len(blob);blob.extend(photo)
+                views.append({'buffer':0,'byteOffset':start,'byteLength':len(photo)})
+                images.append({'bufferView':len(views)-1,'mimeType':'image/jpeg'})
+                textures.append({'source':len(images)-1,'sampler':0})
+                prim['material']=len(materials)
+                materials.append({'name':name+' · фотографии скана','doubleSided':True,'extensions':{'KHR_materials_unlit':{}},
+                    'pbrMetallicRoughness':{'baseColorTexture':{'index':len(textures)-1},'metallicFactor':0,'roughnessFactor':1}})
             meshes.append({'name':name,'primitives':[prim]});nodes.append({'name':name,'mesh':len(meshes)-1,'extras':{'architectureRole':'ceiling' if 'Потолок' in name or 'балок' in name else 'surface'}})
-        materials=[{'name':'Светлая поверхность','doubleSided':True,'pbrMetallicRoughness':{'baseColorFactor':[.72,.75,.77,1],'metallicFactor':0,'roughnessFactor':1}},
-                   {'name':'Пол','doubleSided':True,'pbrMetallicRoughness':{'baseColorFactor':[.36,.31,.25,1],'metallicFactor':0,'roughnessFactor':1}}]
         doc={'asset':{'version':'2.0','generator':'Floor Copy architectural reconstruction'},'scene':0,'scenes':[{'nodes':list(range(len(nodes)))}],'nodes':nodes,'meshes':meshes,'materials':materials,'buffers':[{'byteLength':len(blob)}],'bufferViews':views,'accessors':accessors,'extras':extras}
+        if images:doc.update(images=images,textures=textures,samplers=[{'wrapS':33071,'wrapT':33071,'magFilter':9729,'minFilter':9729}],extensionsUsed=['KHR_materials_unlit'])
         raw=json.dumps(doc,separators=(',',':'),ensure_ascii=False).encode();raw+=b' '*(-len(raw)%4);blob.extend(b'\0'*(-len(blob)%4))
         Path(path).write_bytes(struct.pack('<III',0x46546c67,2,28+len(raw)+len(blob))+struct.pack('<II',len(raw),0x4e4f534a)+raw+struct.pack('<II',len(blob),0x004e4942)+blob)
     def dxf(self,path,scale):
@@ -260,7 +271,11 @@ def build(source,dxf,csv_path,destination,length_m,column_gap_m,height_m=None):
                     'Высоты, проёмы, глубина выступа и границы балок оценены по скану и автоматическому плану Polycam.',
                     'Плоские поверхности продолжены за мебелью. Это геометрическая интерпретация; отделка и мебель не реконструируются.',
                     'Прямые углы заданы по подтверждённому пользователем прямоугольному помещению. Локальные размеры требуют проверки.']}
-    surfaces.glb(destination/'architectural.glb',[sx,sy,sz],{'floorCopy':{'architecture':True,'accuracyVerified':False,'constraints':report['constraints']}})
+    from photo_bake import PhotoBaker
+    baker=PhotoBaker(mesh)
+    surfaces.glb(destination/'architectural.glb',[sx,sy,sz],{'floorCopy':{'architecture':True,'accuracyVerified':False,'constraints':report['constraints']}},baker)
+    report['photoTexture']=baker.report()
+    if baker.images:report['warnings'].append('Фотографии перенесены только с близких параллельных участков скана. Ненаблюдаемые области однотонные; перенос фото не повышает точность размеров.')
     surfaces.dxf(destination/'architectural.dxf',[sx,sy,sz])
     plan_svg(destination/'architectural-plan.svg',[xl*sx,zl*sz,xr*sx,zr*sz],[front*sx,cmin*sz,cmax*sz],report)
     with (destination/'architectural-dimensions.csv').open('w',encoding='utf-8-sig',newline='') as stream:
