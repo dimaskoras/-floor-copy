@@ -114,7 +114,7 @@ class Surfaces:
         points=np.asarray(points,dtype=float)
         if np.linalg.norm(np.cross(points[1]-points[0],points[2]-points[0]))<1e-10:return
         self.parts[name].append(points)
-    def glb(self,path,scale,extras,baker=None):
+    def glb(self,path,scale,extras,baker=None,photo_surfaces=None):
         blob=bytearray();views=[];accessors=[];meshes=[];nodes=[];images=[];textures=[]
         materials=[{'name':'Светлая поверхность','doubleSided':True,'pbrMetallicRoughness':{'baseColorFactor':[.72,.75,.77,1],'metallicFactor':0,'roughnessFactor':1}},
                    {'name':'Пол','doubleSided':True,'pbrMetallicRoughness':{'baseColorFactor':[.36,.31,.25,1],'metallicFactor':0,'roughnessFactor':1}}]
@@ -124,7 +124,7 @@ class Surfaces:
             item={'bufferView':len(views)-1,'componentType':component,'count':len(a),'type':kind}
             if bounds:item.update(min=a.min(axis=0).tolist(),max=a.max(axis=0).tolist())
             accessors.append(item);return len(accessors)-1
-        for name,quads in self.parts.items():
+        for name,quads in list(self.parts.items())+list(photo_surfaces.parts.items() if photo_surfaces else []):
             v=np.concatenate(quads)*np.array(scale);n=[];f=[]
             for i,q in enumerate(v.reshape(-1,4,3)):
                 norm=np.cross(q[1]-q[0],q[2]-q[0]);norm/=np.linalg.norm(norm);n.extend([norm]*4)
@@ -140,7 +140,8 @@ class Surfaces:
                 prim['material']=len(materials)
                 materials.append({'name':name+' · фотографии скана','doubleSided':True,'extensions':{'KHR_materials_unlit':{}},
                     'pbrMetallicRoughness':{'baseColorTexture':{'index':len(textures)-1},'metallicFactor':0,'roughnessFactor':1}})
-            meshes.append({'name':name,'primitives':[prim]});nodes.append({'name':name,'mesh':len(meshes)-1,'extras':{'architectureRole':'ceiling' if 'Потолок' in name or 'балок' in name else 'surface'}})
+            role='openingPhoto' if photo_surfaces and name in photo_surfaces.parts else 'ceiling' if 'Потолок' in name or 'балок' in name else 'surface'
+            meshes.append({'name':name,'primitives':[prim]});nodes.append({'name':name,'mesh':len(meshes)-1,'extras':{'architectureRole':role,'measurementExcluded':role=='openingPhoto'}})
         doc={'asset':{'version':'2.0','generator':'Floor Copy architectural reconstruction'},'scene':0,'scenes':[{'nodes':list(range(len(nodes)))}],'nodes':nodes,'meshes':meshes,'materials':materials,'buffers':[{'byteLength':len(blob)}],'bufferViews':views,'accessors':accessors,'extras':extras}
         if images:doc.update(images=images,textures=textures,samplers=[{'wrapS':33071,'wrapT':33071,'magFilter':9729,'minFilter':9729}],extensionsUsed=['KHR_materials_unlit'])
         raw=json.dumps(doc,separators=(',',':'),ensure_ascii=False).encode();raw+=b' '*(-len(raw)%4);blob.extend(b'\0'*(-len(blob)%4))
@@ -272,8 +273,16 @@ def build(source,dxf,csv_path,destination,length_m,column_gap_m,height_m=None):
                     'Плоские поверхности продолжены за мебелью. Это геометрическая интерпретация; отделка и мебель не реконструируются.',
                     'Прямые углы заданы по подтверждённому пользователем прямоугольному помещению. Локальные размеры требуют проверки.']}
     from photo_bake import PhotoBaker
+    from raw_dimensions import dimensions_from_planes
     baker=PhotoBaker(mesh)
-    surfaces.glb(destination/'architectural.glb',[sx,sy,sz],{'floorCopy':{'architecture':True,'accuracyVerified':False,'constraints':report['constraints']}},baker)
+    photos=Surfaces()
+    for o in openings if baker.images else []:
+        x=xl if o['side']=='left' else xr
+        photos.quad('Фото окон и дверей',[[x,o['bottom'],o['start']],[x,o['top'],o['start']],[x,o['top'],o['end']],[x,o['bottom'],o['end']]])
+    surfaces.glb(destination/'architectural.glb',[sx,sy,sz],{'floorCopy':{'architecture':True,'accuracyVerified':False,'constraints':report['constraints']}},baker,photos)
+    report['openingPhotoPanels']=sum(len(v) for v in photos.parts.values())
+    report['rawScanDimensions']=dimensions_from_planes(planes)
+    report['warnings'].append('Фото окон и дверей — визуальные вставки по скану, без достоверной толщины рам. Они исключены из чертежа и выбора точек измерений.')
     report['photoTexture']=baker.report()
     if baker.images:report['warnings'].append('Фотографии перенесены только с близких параллельных участков скана. Ненаблюдаемые области однотонные; перенос фото не повышает точность размеров.')
     surfaces.dxf(destination/'architectural.dxf',[sx,sy,sz])

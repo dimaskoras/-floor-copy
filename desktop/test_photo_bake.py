@@ -43,6 +43,11 @@ class PhotoBakeTests(unittest.TestCase):
             p=result.primitives[0];self.assertIn('TEXCOORD_0',p['attributes'])
             self.assertIn('baseColorTexture',result.doc['materials'][p['material']]['pbrMetallicRoughness'])
             self.assertFalse(baker.report()['geometryChanged'])
+            windows=Surfaces();windows.quad('Фото окон и дверей',q+[0,1,0])
+            clean.glb(destination,[1,1,1],{},baker,windows)
+            self.assertEqual(len(ScanMesh(destination).faces),4)
+            self.assertEqual(len(ScanMesh(destination,exclude_roles=('openingPhoto',)).faces),2)
+            self.assertTrue(ScanMesh(destination).doc['nodes'][-1]['extras']['measurementExcluded'])
 
     def test_untextured_source_remains_supported(self):
         with tempfile.TemporaryDirectory() as tmp:

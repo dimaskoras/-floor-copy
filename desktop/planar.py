@@ -13,7 +13,7 @@ from scipy.sparse import coo_matrix, diags
 
 
 class ScanMesh:
-    def __init__(self, path):
+    def __init__(self, path, exclude_roles=()):
         raw = Path(path).read_bytes()
         magic, version, total = struct.unpack_from('<III', raw)
         if (magic, version, total) != (0x46546c67, 2, len(raw)):
@@ -34,7 +34,8 @@ class ScanMesh:
                         and np.allclose(node.get('matrix', np.eye(4).ravel().tolist()), np.eye(4).ravel()))
             if not identity:
                 raise ValueError('GLB с преобразованиями узлов пока нельзя выравнивать')
-        self.primitives=[p for m in self.doc.get('meshes',[]) for p in m['primitives']]
+        excluded={n['mesh'] for n in self.doc.get('nodes',[]) if 'mesh' in n and n.get('extras',{}).get('architectureRole') in exclude_roles}
+        self.primitives=[p for i,m in enumerate(self.doc.get('meshes',[])) if i not in excluded for p in m['primitives']]
         if not self.primitives or any(p.get('mode',4)!=4 for p in self.primitives):raise ValueError('Нужна треугольная сетка, а не splat')
         self.primitive=self.primitives[0];self.position_id=self.primitive['attributes']['POSITION']
         blocks={};self.parts=[];vertices=[];faces=[];offset=0

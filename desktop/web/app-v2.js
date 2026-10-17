@@ -17,6 +17,7 @@ controls.enableDamping=true;camera.position.set(5,4,5);
 scene.add(new THREE.HemisphereLight(0xffffff,0x8796a5,2));
 const grid=new THREE.GridHelper(30,30,0x53616d,0x303e49);scene.add(grid);
 const marks=new THREE.Group();scene.add(marks);
+const rawMarks=new THREE.Group();scene.add(rawMarks);
 let project=null,jobs=[],current=null,mode='mesh',model=null,before=null,after=null,cache=new Map(),request=0,measurement=null,picked=[],drag=null,selection=null,busyUpload=false,busyArchitecture=false;
 let cutLevel=2.4,hiddenWallIds=new Set();
 const ray=new THREE.Raycaster();ray.firstHitOnly=true;ray.params.Points.threshold=.02;
@@ -25,7 +26,7 @@ function error(text){$('error').textContent=text;$('error').hidden=!text}
 async function api(path,options={}){const r=await fetch(path,options),d=await r.json();if(!r.ok)throw new Error(d.error||'Ошибка сервера');return d}
 const post=(path,data)=>api(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
 function dispose(root){root.traverse(o=>{if(o.userData.photoMaterial){o.material=o.userData.photoMaterial;o.userData.flatMaterial?.dispose()}});root.traverse(o=>{o.geometry?.disposeBoundsTree?.();o.geometry?.dispose();const materials=o.material?(Array.isArray(o.material)?o.material:[o.material]):[];for(const m of materials){m.map?.dispose();m.dispose()}})}
-function clearSceneModels(){if(flight.active)flight.set(false);error('');++request;for(const root of cache.values()){scene.remove(root);dispose(root)}cache.clear();model=before=after=null;$('empty').hidden=false;$('variant').textContent='Выбери или импортируй скан';$('modelStats').textContent='Метры · Y вверх';$('mapStage').hidden=true;$('floorplanStage').hidden=true;for(const id of ['compareLine','compareControl','beforeLabel','afterLabel','heatLegend'])$(id).hidden=true;$('variant').dataset.ready='';updateInspector()}
+function clearSceneModels(){if(flight.active)flight.set(false);error('');++request;for(const root of cache.values()){scene.remove(root);dispose(root)}cache.clear();rawMarks.clear();$('rawDims').checked=false;model=before=after=null;$('empty').hidden=false;$('variant').textContent='Выбери или импортируй скан';$('modelStats').textContent='Метры · Y вверх';$('mapStage').hidden=true;$('floorplanStage').hidden=true;for(const id of ['compareLine','compareControl','beforeLabel','afterLabel','heatLegend'])$(id).hidden=true;$('variant').dataset.ready='';updateInspector()}
 new ResizeObserver(()=>{const w=$('viewport').clientWidth,h=$('viewport').clientHeight;if(!w||!h)return;renderer.setSize(w,h);camera.aspect=w/h;camera.updateProjectionMatrix()}).observe($('viewport'));
 const flight=freeCamera(THREE,camera,controls,renderer.domElement,(active,position)=>{$('cameraMode').value=active?'free':'orbit';$('flightHelp').hidden=!active;if($('tool').value==='navigate')$('toolHelp').textContent=active?'WASD — движение, Q/E — вниз/вверх, Shift — быстрее, правая кнопка + мышь — осмотр. Esc — обычная камера.':'Левая кнопка — вращение, правая — перемещение, колесо — масштаб.';if(position)$('cameraPosition').textContent=`Камера: ${position.x.toFixed(2)} · ${position.y.toFixed(2)} · ${position.z.toFixed(2)} м`;});
 let frameTime=performance.now();
@@ -91,7 +92,7 @@ async function show(nextMode='mesh',reset=false){
   $('heatLegend').hidden=mode!=='difference';
   $('variant').textContent={architecture:'Ровная модель · фотографии скана + лазерные размеры',compareArchitecture:'Исходный скан / ровная модель',forced:'Проекция архитектуры на плоскости · размеры требуют проверки',compareForced:'Исходный / принудительно выровненный',mesh:'Исходная модель',corrected:'Обработка v2 · ограниченные правки',compare:'Один ракурс · два результата',difference:'Сдвиг вершин относительно исходного GLB',points:'Облако точек LAS',old:'Архив v1 · содержит дефекты'}[mode];
   $('variant').dataset.ready=mode;$('afterLabel').textContent=mode==='compareArchitecture'?'Ровная модель':mode==='compareForced'?'Выравнивание плоскостей':'Обработка v2';
-  if(reset)fit();applyAppearance();wire();applyCut();applyWalls();renderWallControls();updateInspector();$('hideWalls').disabled=mode==='points'||mode==='plan';
+  if(reset)fit();applyAppearance();wire();applyCut();applyWalls();renderWallControls();updateInspector();renderRawDimensions();$('hideWalls').disabled=mode==='points'||mode==='plan';
  }catch(e){if(ticket!==request)return;error(e.message);$('viewMode').value=mode;$('variant').textContent='Ошибка загрузки: '+e.message;$('variant').dataset.ready='error'}
 }
 function applyAppearance(){for(const root of cache.values())root.traverse(o=>{if(!o.isMesh)return;if(!o.userData.photoMaterial&&(Array.isArray(o.material)?o.material:[o.material]).some(m=>m.map)){o.userData.photoMaterial=o.material;o.userData.flatMaterial=new THREE.MeshStandardMaterial({color:0xb9c3cb,roughness:1,metalness:0,flatShading:!o.geometry.attributes.normal,side:THREE.DoubleSide})}if(o.userData.photoMaterial)o.material=$('solidView').checked?o.userData.flatMaterial:o.userData.photoMaterial});wire()}
@@ -188,7 +189,7 @@ $('planModel').onclick=async()=>{try{const gltf=await new GLTFLoader().loadAsync
 function clearMeasurement(){for(const o of [...marks.children]){marks.remove(o);dispose(o)}picked=[];selection=null;measurement=null;$('selectionRect').hidden=true;$('measurementResult').textContent='Измерение не выбрано'}
 function dot(p){const m=new THREE.Mesh(new THREE.SphereGeometry(.02,10,10),new THREE.MeshBasicMaterial({color:0xffd477,depthTest:false}));m.position.fromArray(p);marks.add(m)}
 function line(points,close=false){const data=points.map(p=>new THREE.Vector3(...p));if(close&&data.length)data.push(data[0].clone());marks.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(data),new THREE.LineBasicMaterial({color:0xffd477,depthTest:false})))}
-function visiblePath(object){for(let p=object;p;p=p.parent)if(!p.visible)return false;return true}
+function visiblePath(object){for(let p=object;p;p=p.parent)if(!p.visible||p.userData.measurementExcluded)return false;return true}
 function hitAt(x,y){if(!model)return null;const r=renderer.domElement.getBoundingClientRect();pointer.set((x-r.left)/r.width*2-1,-(y-r.top)/r.height*2+1);ray.firstHitOnly=!$('cut').checked;ray.setFromCamera(pointer,camera);const hits=ray.intersectObject(model,true);return hits.find(h=>visiblePath(h.object)&&(!$('cut').checked||h.point.y<=cutLevel))||null}
 function updateMeasurement(finish=false){
  const tool=$('tool').value;if(picked.length<(['polygon','surface'].includes(tool)?3:2)){measurement=null;if(['polygon','surface'].includes(tool))$('measurementResult').textContent='Для площади нужно минимум 3 точки';return}
@@ -254,3 +255,17 @@ const mapIntegration=initMap({getProject:()=>project,getScan:()=>current?.id,get
 for(const key of ['importCompact','importFileButton','planUpload'])$(key).disabled=false;
 try{await loadProjects();await refresh()}catch(e){error(e.message)}
 setInterval(refresh,1800);
+
+function renderRawDimensions(){
+ for(const child of [...rawMarks.children]){child.geometry?.dispose();child.material?.map?.dispose();child.material?.dispose();rawMarks.remove(child)}
+ if(!$('rawDims').checked||mode!=='mesh')return;
+ const raw=current?.report?.architecturalAnalysis?.rawScanDimensions;
+ for(const item of raw?.items||[]){
+  const pts=item.points.map(p=>new THREE.Vector3(...p));
+  const line=new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts),new THREE.LineBasicMaterial({color:0x50e4d3,depthTest:false}));line.renderOrder=100;rawMarks.add(line);
+  for(const p of pts){const dot=new THREE.Mesh(new THREE.SphereGeometry(.045,12,8),new THREE.MeshBasicMaterial({color:0x50e4d3,depthTest:false}));dot.position.copy(p);dot.renderOrder=101;rawMarks.add(dot)}
+  const canvas=document.createElement('canvas');canvas.width=768;canvas.height=112;const ctx=canvas.getContext('2d');ctx.fillStyle='rgba(16,29,33,.94)';ctx.fillRect(0,0,768,112);ctx.fillStyle='#62ead9';ctx.font='bold 43px Arial';ctx.textAlign='center';ctx.fillText('≈ '+item.meters.toFixed(3)+' м · исходный скан',384,48);ctx.fillStyle='#ffffff';ctx.font='29px Arial';ctx.fillText(item.name,384,92);
+  const material=new THREE.SpriteMaterial({map:new THREE.CanvasTexture(canvas),depthTest:false,depthWrite:false,sizeAttenuation:false});const label=new THREE.Sprite(material);label.position.copy(pts[0]).lerp(pts[1],.5);label.position.y+=.15;label.scale.set(.48,.07,1);label.renderOrder=102;rawMarks.add(label);
+ }
+}
+$('rawDims').onchange=async()=>{if($('rawDims').checked){if(!current?.report?.architecturalAnalysis?.rawScanDimensions?.items?.length){$('rawDims').checked=false;return error('Сначала построй модель: нужны распознанные плоскости скана')}await show('mesh');$('variant').textContent='Размеры по исходному скану · без лазерной калибровки';}renderRawDimensions()};

@@ -55,7 +55,7 @@ def wall_point(w,t):return np.array(w['anchor'])+np.array(w['tangent'])*t
 def build(source,folder,factor=1,section_meters=1.1,title='План по скану',scale=100):
     factor=float(factor);section_meters=float(section_meters);scale=int(scale)
     if not math.isfinite(factor) or not .1<factor<10 or not .1<=section_meters<=3 or scale not in (20,50,100,200):raise ValueError('Проверь масштаб, высоту сечения и масштаб листа')
-    folder=Path(folder);mesh=ScanMesh(source)
+    folder=Path(folder);mesh=ScanMesh(source,exclude_roles=('openingPhoto',))
     plane_file=Path(source).parent/('architectural.json' if Path(source).name=='architectural.glb' else 'planes.json')
     plane_document=json.loads(plane_file.read_text(encoding='utf-8')) if plane_file.exists() else {'planes':discover_planes(mesh.vertices,mesh.faces)[0]}
     planes=plane_document['planes'];is_model=Path(source).name=='architectural.glb'
